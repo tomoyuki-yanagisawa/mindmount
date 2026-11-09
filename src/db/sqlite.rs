@@ -24,6 +24,8 @@ pub enum DbError {
     Io(#[from] std::io::Error),
     #[error("invalid timestamp in database: {0}")]
     InvalidTimestamp(i64),
+    #[error("missing search content for document {0}")]
+    MissingContent(i64),
 }
 
 pub type Result<T> = std::result::Result<T, DbError>;
@@ -46,6 +48,23 @@ impl Database {
     pub async fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+            let file = std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .open(path)?;
+            let permissions = file.metadata()?.permissions();
+            let restricted = permissions.mode() & !0o077;
+            if restricted != permissions.mode() {
+                file.set_permissions(std::fs::Permissions::from_mode(restricted))?;
+            }
         }
 
         let options = SqliteConnectOptions::new()
@@ -237,17 +256,34 @@ impl Database {
     }
 
     /// Applies one mount's index changes in a single transaction.
-    pub async fn apply_mount_sync(
+    #[cfg(test)]
+    pub(crate) async fn apply_mount_sync(
         &self,
         mount_id: i64,
         upserts: &[Document],
         deletes: &[String],
     ) -> Result<()> {
-        self.apply_mount_sync_with_content(mount_id, upserts, deletes, &HashMap::new())
+        self.apply_mount_sync_inner(mount_id, upserts, deletes, &HashMap::new())
             .await
     }
 
-    pub async fn apply_mount_sync_with_content(
+    pub(crate) async fn apply_mount_sync_with_content(
+        &self,
+        mount_id: i64,
+        upserts: &[Document],
+        deletes: &[String],
+        content: &HashMap<i64, String>,
+    ) -> Result<()> {
+        for document in upserts {
+            if !content.contains_key(&document.id) {
+                return Err(DbError::MissingContent(document.id));
+            }
+        }
+        self.apply_mount_sync_inner(mount_id, upserts, deletes, content)
+            .await
+    }
+
+    async fn apply_mount_sync_inner(
         &self,
         mount_id: i64,
         upserts: &[Document],
@@ -409,6 +445,32 @@ mod tests {
             directory_path: directory.to_path_buf(),
             created_at: Utc::now(),
         }
+    }
+
+    #[tokio::test]
+    async fn refuses_upserts_without_search_content() {
+        let temp = tempdir().unwrap();
+        let database = Database::open(&temp.path().join("test.sqlite"))
+            .await
+            .unwrap();
+        let mount = mount(1, &temp.path().join("project/notes"));
+        database.sync_mounts(&[mount]).await.unwrap();
+        let now = Utc::now();
+        let document = Document {
+            id: 10,
+            mount_id: 1,
+            relative_path: "page.md".into(),
+            title: "Page".into(),
+            content_hash: "hash".into(),
+            modified_at: now,
+            indexed_at: now,
+        };
+        let error = database
+            .apply_mount_sync_with_content(1, &[document], &[], &HashMap::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, DbError::MissingContent(10)));
+        assert!(database.documents_for_mount(1).await.unwrap().is_empty());
     }
 
     #[tokio::test]

@@ -413,6 +413,31 @@ fn search_treats_query_as_literal_and_validates_mount() {
 }
 
 #[test]
+#[cfg(unix)]
+fn restricts_existing_data_directory_and_database_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let env = TestEnv::new();
+    let data = env.config_home.join("mindmount");
+    let db_dir = data.join("db");
+    fs::create_dir_all(&db_dir).unwrap();
+    fs::set_permissions(&data, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::set_permissions(&db_dir, fs::Permissions::from_mode(0o755)).unwrap();
+    assert_success(&env.mount("Notes"));
+    fs::set_permissions(env.database_path(), fs::Permissions::from_mode(0o644)).unwrap();
+    assert_success(&env.run(&["storage", "list"]));
+    for path in [&data, &db_dir, &env.database_path()] {
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o077,
+            0,
+            "{}",
+            path.display()
+        );
+    }
+    assert!(stdout(&env.run(&["index", "search", "Architecture"])).contains("architecture.md"));
+}
+
+#[test]
 fn mount_lists_pages_and_unmount_leaves_files_untouched() {
     let env = TestEnv::new();
     let before = snapshot(&env.notes);

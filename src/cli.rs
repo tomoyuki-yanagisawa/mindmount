@@ -54,6 +54,14 @@ pub enum IndexCommand {
     Rescan,
     /// List indexed pages.
     Pages(PagesOptions),
+    /// Search indexed Markdown by literal text.
+    Search {
+        /// Text to search for.
+        query: String,
+        /// Only search within this mount.
+        #[arg(short = 'm', long = "mount")]
+        mount_id: Option<i64>,
+    },
 }
 
 /// Options for the root invocation (`mindmount -p ... -d ...`).

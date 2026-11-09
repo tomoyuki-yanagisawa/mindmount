@@ -126,6 +126,52 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 }
 
 #[test]
+fn searches_japanese_and_tracks_index_changes() {
+    let env = TestEnv::new();
+    fs::write(
+        env.notes.join("japanese.md"),
+        "# 設計メモ\n\n日本語の検索テストです。\n",
+    )
+    .unwrap();
+    assert_success(&env.mount("Notes"));
+
+    for query in ["日本語", "検索", "語", "設計メモ"] {
+        let output = env.run(&["index", "search", query]);
+        assert_success(&output);
+        assert!(stdout(&output).contains("japanese.md"));
+    }
+    assert!(stdout(&env.run(&["index", "search", "存在しない"])).contains("No matching pages"));
+    fs::write(env.notes.join("japanese.md"), "# 新しい内容\n").unwrap();
+    assert_success(&env.run(&["index", "rescan"]));
+    assert!(stdout(&env.run(&["index", "search", "日本語"])).contains("No matching pages"));
+    assert!(stdout(&env.run(&["index", "search", "新しい"])).contains("japanese.md"));
+    fs::remove_file(env.notes.join("japanese.md")).unwrap();
+    assert_success(&env.run(&["index", "rescan"]));
+    assert!(stdout(&env.run(&["index", "search", "新しい"])).contains("No matching pages"));
+    let mount_id = env.load_config().mounts[0].id.to_string();
+    assert_success(&env.run(&["storage", "unmount", &mount_id]));
+    assert!(stdout(&env.run(&["index", "search", "architecture"])).contains("No matching pages"));
+}
+
+#[test]
+fn search_treats_query_as_literal_and_validates_mount() {
+    let env = TestEnv::new();
+    fs::write(
+        env.notes.join("literal.md"),
+        "# Test\nA \"quoted\" value and 100%\n",
+    )
+    .unwrap();
+    assert_success(&env.mount("Notes"));
+    for query in ["\"quoted\"", "100%", "QUOTED"] {
+        let output = env.run(&["index", "search", query]);
+        assert_success(&output);
+        assert!(stdout(&output).contains("literal.md"), "query: {query}");
+    }
+    assert_failure(&env.run(&["index", "search", ""]));
+    assert_failure(&env.run(&["index", "search", "test", "--mount", "999"]));
+}
+
+#[test]
 fn mount_lists_pages_and_unmount_leaves_files_untouched() {
     let env = TestEnv::new();
     let before = snapshot(&env.notes);

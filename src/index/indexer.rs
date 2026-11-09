@@ -55,6 +55,7 @@ pub async fn sync_mount(
     };
     let mut scanned_paths = HashSet::new();
     let mut upserts = Vec::new();
+    let mut search_content = HashMap::new();
     let mut unchanged = Vec::new();
 
     for relative in &files {
@@ -113,6 +114,7 @@ pub async fn sync_mount(
             modified_at,
             indexed_at: Utc::now(),
         });
+        search_content.insert(id, content);
     }
 
     let deletes: Vec<String> = existing
@@ -137,7 +139,7 @@ pub async fn sync_mount(
     }
 
     database
-        .apply_mount_sync(mount_id, &upserts, &deletes)
+        .apply_mount_sync_with_content(mount_id, &upserts, &deletes, &search_content)
         .await?;
 
     Ok(report)

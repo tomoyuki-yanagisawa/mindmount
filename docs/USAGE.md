@@ -41,6 +41,7 @@ mindmount storage unmount <MOUNT_ID>
 
 mindmount index rescan
 mindmount index pages [-m <MOUNT_ID>]
+mindmount index search <QUERY> [-m <MOUNT_ID>]
 
 mindmount serve [--host <HOST>] [--port <PORT>]
 mindmount mcp
@@ -55,6 +56,7 @@ mindmount -p <PATH> -d <PATH> [-n <NAME>] [--host <HOST>] [--port <PORT>]
 | `storage unmount` | マウント登録と派生 index を削除する |
 | `index rescan` | 全マウントの index を再構築する |
 | `index pages` | index 済みページを一覧表示する |
+| `index search` | index 済み Markdown を文字列で検索する |
 | `serve` | 読み取り専用 Web ビューアを起動する（Phase 4、未実装） |
 | `mcp` | MCP stdio サーバーを起動する（Phase 3、未実装） |
 
@@ -166,6 +168,19 @@ mindmount index pages      # まだ古い
 mindmount index rescan     # ここで反映
 mindmount index pages      # 新しい内容
 ```
+
+## index search
+
+```bash
+mindmount index search '検索したい文字列'
+mindmount index search '設計' --mount 245510401681731584
+```
+
+タイトルと Markdown 全文を部分一致で検索します。検索語は構文ではなく文字列として扱い、
+ASCII 英字の大文字・小文字は区別しません。その他の文字の大小文字の扱いは検索語の長さにより異なります。
+1〜2 文字の検索は index 全体を走査するため、データ量が多いと遅くなります。
+外部編集後は `index rescan` で検索結果を更新してください。既存の index を
+アップグレードした場合も、初回検索前に `index rescan` が必要です。
 
 ## index rescan
 
@@ -427,7 +442,7 @@ SQLite の WAL と 5 秒の busy timeout を使っています。別プロセス
 ## 現時点の制約
 
 - ファイル監視なし（Phase 2）
-- 全文検索・参照・バックリンクなし（Phase 2）
+- 参照・バックリンクなし（Phase 2）
 - MCP なし（Phase 3）
 - Web ビューアなし（Phase 4）
 - ローカル Web UI は閲覧専用（編集機能なし）

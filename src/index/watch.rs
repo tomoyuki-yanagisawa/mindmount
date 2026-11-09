@@ -1,8 +1,8 @@
 //! Watch mounted directories, coalescing filesystem events into rescans.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use anyhow::{Context, Result};
 use notify::{EventKind, RecursiveMode, Watcher};
@@ -11,8 +11,6 @@ use tokio::sync::mpsc;
 use crate::config::{AppPaths, Config};
 use crate::db::sqlite::Database;
 use crate::id::Snowflake;
-use crate::index::indexer;
-use crate::storage::filesystem::MountRoot;
 
 const DEBOUNCE: Duration = Duration::from_millis(500);
 const RECONCILE: Duration = Duration::from_secs(30);
@@ -32,7 +30,6 @@ pub async fn run(paths: &AppPaths) -> Result<()> {
     let mut config_interval = tokio::time::interval(Duration::from_secs(1));
     config_interval.tick().await;
     let mut config_snapshot = None;
-    let mut missing: HashMap<i64, HashMap<String, Instant>> = HashMap::new();
 
     eprintln!("Watching mounted directories; press Ctrl-C to stop.");
     'watch: loop {
@@ -57,10 +54,10 @@ pub async fn run(paths: &AppPaths) -> Result<()> {
                     },
                 }
             }
-            match reconcile(paths, &mut watcher, &mut watched, &mut missing).await {
-                Ok((snapshot, deferred)) => {
+            match reconcile(paths, &mut watcher, &mut watched).await {
+                Ok(snapshot) => {
                     config_snapshot = Some(snapshot);
-                    dirty = deferred;
+                    dirty = false;
                 }
                 Err(error) => {
                     eprintln!("watch: retrying after error: {error:#}");
@@ -120,8 +117,7 @@ async fn reconcile(
     paths: &AppPaths,
     watcher: &mut impl Watcher,
     watched: &mut HashSet<PathBuf>,
-    missing: &mut HashMap<i64, HashMap<String, Instant>>,
-) -> Result<(Vec<u8>, bool)> {
+) -> Result<Vec<u8>> {
     // Lock only while reading config and updating the index. IDs must be
     // reloaded under this lock because other CLI processes may issue IDs.
     let _lock = paths.lock()?;
@@ -145,39 +141,8 @@ async fn reconcile(
     }
     let database = Database::open(&paths.database_file()).await?;
     let mut ids = Snowflake::persistent(config.node_id, &paths.id_state_file())?;
-    database.sync_mounts(&config.mounts).await?;
-    missing.retain(|id, _| config.mounts.iter().any(|mount| mount.id == *id));
-    let mut deferred = false;
-    let mut errors = Vec::new();
-    for mount in &config.mounts {
-        let result = match MountRoot::new(&mount.directory_path) {
-            Ok(root) => {
-                indexer::sync_mount_watched(
-                    &database,
-                    mount.id,
-                    &root,
-                    &mut ids,
-                    missing.entry(mount.id).or_default(),
-                )
-                .await
-            }
-            Err(error) => Err(error),
-        };
-        match result {
-            Ok((_, true)) => deferred = true,
-            Ok((report, false)) => println!(
-                "Reindexed \"{}\" ({}): {}",
-                mount.name,
-                mount.id,
-                report.summary()
-            ),
-            Err(error) => errors.push(format!("{} ({}): {error:#}", mount.name, mount.id)),
-        }
-    }
-    if !errors.is_empty() {
-        anyhow::bail!("cannot reindex {}", errors.join("; "));
-    }
-    Ok((snapshot, deferred))
+    crate::app::reindex(&config, &database, &mut ids).await?;
+    Ok(snapshot)
 }
 
 #[cfg(test)]

@@ -2,11 +2,9 @@
 //!
 //! Markdown files are authoritative. This module scans them, reads their
 //! metadata, and applies the resulting changes to SQLite in one transaction.
-//! File watching arrives in Phase 2.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
-use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
@@ -42,29 +40,6 @@ pub async fn sync_mount(
     root: &MountRoot,
     ids: &mut Snowflake,
 ) -> Result<SyncReport> {
-    Ok(sync_mount_inner(database, mount_id, root, ids, None)
-        .await?
-        .0)
-}
-
-/// A watch rescan waits for missing paths to remain absent before deleting them.
-pub(crate) async fn sync_mount_watched(
-    database: &Database,
-    mount_id: i64,
-    root: &MountRoot,
-    ids: &mut Snowflake,
-    missing_since: &mut HashMap<String, Instant>,
-) -> Result<(SyncReport, bool)> {
-    sync_mount_inner(database, mount_id, root, ids, Some(missing_since)).await
-}
-
-async fn sync_mount_inner(
-    database: &Database,
-    mount_id: i64,
-    root: &MountRoot,
-    ids: &mut Snowflake,
-    missing_since: Option<&mut HashMap<String, Instant>>,
-) -> Result<(SyncReport, bool)> {
     let existing: HashMap<String, Document> = database
         .documents_for_mount(mount_id)
         .await?
@@ -148,20 +123,6 @@ async fn sync_mount_inner(
         .collect();
     report.removed = deletes.len();
 
-    if let Some(missing_since) = missing_since {
-        let now = Instant::now();
-        missing_since.retain(|path, _| deletes.contains(path));
-        let mut deferred = false;
-        for path in &deletes {
-            let since = missing_since.entry(path.clone()).or_insert(now);
-            deferred |= now.duration_since(*since) < Duration::from_secs(2);
-        }
-        if deferred {
-            // Do not partially update the mount while a page may reappear.
-            return Ok((report, true));
-        }
-    }
-
     // Catch duplicate frontmatter IDs before touching the database so the
     // whole mount stays consistent.
     let mut owners: HashMap<i64, String> = HashMap::new();
@@ -180,7 +141,7 @@ async fn sync_mount_inner(
         .apply_mount_sync_with_content(mount_id, &upserts, &deletes, &search_content)
         .await?;
 
-    Ok((report, false))
+    Ok(report)
 }
 
 fn relative_path_string(relative: &Path) -> Option<String> {
@@ -262,37 +223,6 @@ mod tests {
             let root = MountRoot::new(&self.notes).unwrap();
             sync_mount(&self.database, self.mount.id, &root, &mut self.ids).await
         }
-    }
-
-    #[tokio::test]
-    async fn watch_defers_missing_files_but_eventually_deletes_them() {
-        let mut fixture = fixture().await;
-        fs::write(fixture.notes.join("page.md"), "# Page\n").unwrap();
-        fixture.sync().await.unwrap();
-        fs::remove_file(fixture.notes.join("page.md")).unwrap();
-        let root = MountRoot::new(&fixture.notes).unwrap();
-        let mut missing = HashMap::new();
-        let (_, deferred) =
-            sync_mount_watched(&fixture.database, 1, &root, &mut fixture.ids, &mut missing)
-                .await
-                .unwrap();
-        assert!(deferred);
-        assert_eq!(
-            fixture.database.documents_for_mount(1).await.unwrap().len(),
-            1
-        );
-        missing.insert("page.md".into(), Instant::now() - Duration::from_secs(3));
-        let (_, deferred) =
-            sync_mount_watched(&fixture.database, 1, &root, &mut fixture.ids, &mut missing)
-                .await
-                .unwrap();
-        assert!(!deferred);
-        assert!(fixture
-            .database
-            .documents_for_mount(1)
-            .await
-            .unwrap()
-            .is_empty());
     }
 
     #[tokio::test]

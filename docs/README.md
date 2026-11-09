@@ -17,7 +17,7 @@ Mindmount はローカルファーストの OSS プロジェクトです。自�
 
 - `USAGE.md` と `DESIGN.md` は、現在の実装に基づく挙動を説明します。
 - 仕様と実装がずれる場合は、まず `DECISIONS.md` と `DESIGN.md` の「現状の制約」を確認してください。
-- Phase 1 は実装済みで、Phase 2 を進めています。詳細は `ROADMAP.md` を参照してください。
+- Phase 1 と Phase 2 は実装済みです。詳細は `ROADMAP.md` を参照してください。
 
 ## 現在の状態
 

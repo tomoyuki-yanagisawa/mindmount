@@ -170,6 +170,50 @@ fn git(project: &Path, args: &[&str]) {
 }
 
 #[test]
+fn watch_preserves_id_during_temporary_file_absence() {
+    let env = TestEnv::new();
+    assert_success(&env.mount("Notes"));
+    let pages = stdout(&env.run(&["index", "pages"]));
+    let original_id = pages
+        .lines()
+        .find(|line| line.contains("\tindex.md\t"))
+        .unwrap()
+        .split('\t')
+        .next()
+        .unwrap()
+        .to_owned();
+    fs::write(env.notes.join("ready.md"), "# Watch ready\n").unwrap();
+    let child = env
+        .command()
+        .args(["index", "watch"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let _watch = WatchProcess(child);
+    wait_for_pages(&env, "Watch ready");
+    fs::rename(
+        env.notes.join("index.md"),
+        env.notes.join(".temporarily-missing"),
+    )
+    .unwrap();
+    std::thread::sleep(Duration::from_millis(1400));
+    wait_for_pages(&env, "\tindex.md\tIndex");
+    fs::rename(
+        env.notes.join(".temporarily-missing"),
+        env.notes.join("index.md"),
+    )
+    .unwrap();
+    fs::write(env.notes.join("index.md"), "# Restored\n").unwrap();
+    wait_for_pages(&env, "Restored");
+    let pages = stdout(&env.run(&["index", "pages"]));
+    assert!(pages
+        .lines()
+        .any(|line| line.starts_with(&format!("{original_id}\t"))
+            && line.contains("\tindex.md\tRestored")));
+}
+
+#[test]
 fn watch_tracks_git_checkout() {
     let env = TestEnv::new();
     git(&env.project, &["init", "-b", "main"]);

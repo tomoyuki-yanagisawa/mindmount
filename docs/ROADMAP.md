@@ -80,14 +80,15 @@ Web UI での編集は提供しません。
 
 - `notify` によるファイル監視・debounce・起動時の全マウント同期（実装済み）
 - atomic save やファイル名変更への追従（実装済み）
-- Git checkout や一時的なファイル不在の検証
+- Git checkout の追従（macOS で結合テスト済み）
+- 長時間の一時的なファイル不在の扱いと Linux での検証
 - FTS5 trigram による全文検索（実装済み）
   - 1〜2 文字の検索は走査で対応
 - Markdown リンク・Wiki リンクの抽出と外部 URL の記録（実装済み）
 - マウント内のリンク解決、曖昧・未解決リンクの記録（実装済み）
 - `references` テーブルとバックリンク（実装済み）
 - `index search`、`index references`、`index backlinks`（実装済み）
-- パーセントエンコードされたリンク先の解決
+- パーセントエンコードされた Markdown リンク先の解決（実装済み）
 
 ### 完了条件
 

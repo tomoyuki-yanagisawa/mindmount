@@ -147,6 +147,57 @@ fn wait_for_pages(env: &TestEnv, expected: &str) {
     }
 }
 
+fn git(project: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(project)
+        .args([
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_AUTHOR_NAME", "Test")
+        .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+        .env("GIT_COMMITTER_NAME", "Test")
+        .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
+        .output()
+        .unwrap();
+    assert_success(&output);
+}
+
+#[test]
+fn watch_tracks_git_checkout() {
+    let env = TestEnv::new();
+    git(&env.project, &["init", "-b", "main"]);
+    fs::write(env.notes.join("index.md"), "# First branch\n").unwrap();
+    git(&env.project, &["add", "notes"]);
+    git(&env.project, &["commit", "-m", "first"]);
+    git(&env.project, &["switch", "-c", "second"]);
+    fs::write(env.notes.join("index.md"), "# Second branch\n").unwrap();
+    git(&env.project, &["add", "notes/index.md"]);
+    git(&env.project, &["commit", "-m", "second"]);
+    git(&env.project, &["switch", "main"]);
+    assert_success(&env.mount("Notes"));
+    fs::write(env.notes.join("ready.md"), "# Watch ready\n").unwrap();
+    let child = env
+        .command()
+        .args(["index", "watch"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let _watch = WatchProcess(child);
+    wait_for_pages(&env, "Watch ready");
+    git(&env.project, &["switch", "second"]);
+    wait_for_pages(&env, "Second branch");
+    git(&env.project, &["switch", "main"]);
+    wait_for_pages(&env, "First branch");
+}
+
 #[test]
 fn watch_reindexes_at_start_and_after_atomic_save() {
     let env = TestEnv::new();
@@ -204,6 +255,24 @@ fn watch_reindexes_at_start_and_after_atomic_save() {
         );
         std::thread::sleep(Duration::from_millis(100));
     }
+}
+
+#[test]
+fn resolves_percent_encoded_markdown_paths_without_escaping_mount() {
+    let env = TestEnv::new();
+    fs::write(env.notes.join("source.md"), "---\nid: 100\n---\n[space](./a%20b.md#part) [japanese](%E6%97%A5%E6%9C%AC.md) [hash](hash%23name.md) [escape](%2E%2E/outside.md) [bad](bad%ZZ.md)\n").unwrap();
+    fs::write(env.notes.join("a b.md"), "---\nid: 201\n---\n").unwrap();
+    fs::write(env.notes.join("日本.md"), "---\nid: 202\n---\n").unwrap();
+    fs::write(env.notes.join("hash#name.md"), "---\nid: 203\n---\n").unwrap();
+    assert_success(&env.mount("Notes"));
+    let output = env.run(&["index", "references", "100"]);
+    assert_success(&output);
+    let links = stdout(&output);
+    assert!(links.contains("201\t./a%20b.md#part"), "{links}");
+    assert!(links.contains("202\t%E6%97%A5%E6%9C%AC.md"), "{links}");
+    assert!(links.contains("203\thash%23name.md"), "{links}");
+    assert!(links.contains("-\t%2E%2E/outside.md"), "{links}");
+    assert!(links.contains("-\tbad%ZZ.md"), "{links}");
 }
 
 #[test]

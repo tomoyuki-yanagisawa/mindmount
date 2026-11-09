@@ -7,6 +7,7 @@
 use std::fmt::Write as _;
 
 use chrono::{DateTime, Utc};
+use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
 use sha2::{Digest, Sha256};
 
 /// A document row as stored in the derived index.
@@ -155,44 +156,28 @@ fn parse_scalar(value: &str) -> String {
 }
 
 fn first_h1(body: &str) -> Option<String> {
-    let mut fence: Option<&str> = None;
-
-    for raw_line in body.lines() {
-        let line = raw_line.trim_start();
-
-        if let Some(marker) = fence {
-            if line.starts_with(marker) {
-                fence = None;
+    let mut heading = None::<String>;
+    for (event, range) in Parser::new(body).into_offset_iter() {
+        match event {
+            Event::Start(Tag::Heading {
+                level: HeadingLevel::H1,
+                ..
+            }) if body[range].trim_start().starts_with('#') => heading = Some(String::new()),
+            Event::End(TagEnd::Heading(HeadingLevel::H1)) => {
+                let title = heading.take().unwrap_or_default();
+                if !title.trim().is_empty() {
+                    return Some(title.trim().to_string());
+                }
             }
-            continue;
-        }
-        if line.starts_with("```") {
-            fence = Some("```");
-            continue;
-        }
-        if line.starts_with("~~~") {
-            fence = Some("~~~");
-            continue;
-        }
-
-        let bytes = line.as_bytes();
-        if bytes.first() != Some(&b'#') {
-            continue;
-        }
-        let hashes = bytes.iter().take_while(|byte| **byte == b'#').count();
-        if hashes != 1 {
-            continue;
-        }
-        if bytes.get(1).is_some_and(|byte| !byte.is_ascii_whitespace()) {
-            continue;
-        }
-
-        let title = line[1..].trim().trim_end_matches('#').trim();
-        if !title.is_empty() {
-            return Some(title.to_string());
+            Event::Text(text) | Event::Code(text) if heading.is_some() => {
+                heading.as_mut().unwrap().push_str(&text);
+            }
+            Event::SoftBreak | Event::HardBreak if heading.is_some() => {
+                heading.as_mut().unwrap().push(' ');
+            }
+            _ => {}
         }
     }
-
     None
 }
 
@@ -232,6 +217,14 @@ mod tests {
     fn strips_trailing_heading_hashes() {
         let document = parse_document("# Title ###\n");
         assert_eq!(document.title("fallback"), "Title");
+    }
+
+    #[test]
+    fn parses_heading_markup_and_ignores_indented_code_and_setext() {
+        let document = parse_document(
+            "    # code\n\nSetext\n======\n\n# A **bold** [link](page.md) and `code`\n",
+        );
+        assert_eq!(document.title("fallback"), "A bold link and code");
     }
 
     #[test]

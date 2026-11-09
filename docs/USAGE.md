@@ -1,6 +1,6 @@
 # Mindmount CLI 利用ガイド
 
-対象: Phase 1（CLI / Storage）実装時点の挙動。
+対象: Phase 2（CLI / Storage / index）までの実装時点の挙動。
 
 ## 前提
 
@@ -202,7 +202,8 @@ mindmount index backlinks <DOCUMENT_ID>
 対象とし、リンク先は同じマウント内で解決します。Wiki リンクはページ名・タイトル・パスから
 探し、候補が複数ある場合は未解決として記録します。外部 URL と未解決リンクの `TARGET_ID` は
 `-` です。コードブロック・インラインコード内のリンクは対象外です。
-Markdown リンクではパーセントエンコードされたパスも解決します。編集や移動後、またアップグレード後は
+Markdown リンクではパーセントエンコードされたパスも解決します。`index watch` の実行中は
+編集・移動が自動で反映されます。実行していない場合や、index をアップグレードした場合は
 `index rescan` が必要です。
 
 ## index search
@@ -215,8 +216,9 @@ mindmount index search '設計' --mount 245510401681731584
 タイトルと Markdown 全文を部分一致で検索します。検索語は構文ではなく文字列として扱い、
 ASCII 英字の大文字・小文字は区別しません。その他の文字の大小文字の扱いは検索語の長さにより異なります。
 1〜2 文字の検索は index 全体を走査するため、データ量が多いと遅くなります。
-外部編集後は `index rescan` で検索結果を更新してください。既存の index を
-アップグレードした場合も、初回検索前に `index rescan` が必要です。
+`index watch` の実行中は外部編集が自動で反映されます。実行していない場合は
+`index rescan` で検索結果を更新してください。既存の index をアップグレードした場合も、
+初回検索前に `index rescan` が必要です。
 
 ## index rescan
 
@@ -224,7 +226,8 @@ ASCII 英字の大文字・小文字は区別しません。その他の文字�
 mindmount index rescan
 ```
 
-全マウントの Markdown を走査し、index を再構築します。出力例:
+全マウントの Markdown を走査し、index を再構築します。通常は変更ファイルと影響範囲だけが
+更新されるため、このコマンドは全体を作り直したいときの保険として使えます。出力例:
 
 ```text
 Reindexed "Project notes" (245510401681731584): 3 files, 1 added, 1 updated, 1 removed, 0 unchanged, 0 errors
@@ -276,7 +279,7 @@ mindmount serve
 mindmount mcp
 ```
 
-Phase 1 ではどちらも未実装です。
+現時点ではどちらも未実装です。
 
 - `serve` は Phase 4 で**読み取り専用の Web ビューア**として実装する。
 - `mcp` は Phase 3 で stdio MCP サーバーとして実装する。
@@ -321,7 +324,7 @@ mindmount index pages
 
 ### frontmatter
 
-Phase 1 は簡易パーサで、トップレベルの `id` と `title` のみを読みます。
+現在は簡易パーサで、トップレベルの `id` と `title` のみを読みます。
 
 ```yaml
 ---

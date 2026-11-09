@@ -14,6 +14,17 @@ pub struct Reference {
     pub kind: &'static str,
 }
 
+/// A reference resolved against a mount's documents, ready to persist.
+#[derive(Debug)]
+pub struct ResolvedReference {
+    pub source_id: i64,
+    pub target_id: Option<i64>,
+    pub target: String,
+    pub anchor: Option<String>,
+    pub raw: String,
+    pub kind: &'static str,
+}
+
 pub fn extract(content: &str) -> Vec<Reference> {
     let body = parse_document(content).body;
     let mut result = Vec::new();

@@ -9,8 +9,9 @@ use notify::{EventKind, RecursiveMode, Watcher};
 use tokio::sync::mpsc;
 
 use crate::config::{AppPaths, Config};
-use crate::db::sqlite::Database;
-use crate::id::Snowflake;
+use crate::core::id::Snowflake;
+use crate::db::Database;
+use crate::index::indexer;
 
 const DEBOUNCE: Duration = Duration::from_millis(500);
 const RECONCILE: Duration = Duration::from_secs(30);
@@ -141,7 +142,28 @@ async fn reconcile(
     }
     let database = Database::open(&paths.database_file()).await?;
     let mut ids = Snowflake::persistent(config.node_id, &paths.id_state_file())?;
-    crate::app::reindex(&config, &database, &mut ids).await?;
+    let outcome = indexer::sync_all(&config, &database, &mut ids).await?;
+    for synced in &outcome.synced {
+        println!(
+            "Reindexed \"{}\" ({}): {}",
+            synced.mount.name,
+            synced.mount.id,
+            synced.report.summary()
+        );
+    }
+    if !outcome.failures.is_empty() {
+        let failures: Vec<_> = outcome
+            .failures
+            .iter()
+            .map(|failure| {
+                format!(
+                    "{} ({}): {}",
+                    failure.mount.name, failure.mount.id, failure.message
+                )
+            })
+            .collect();
+        anyhow::bail!("cannot reindex {}", failures.join("; "));
+    }
     Ok(snapshot)
 }
 

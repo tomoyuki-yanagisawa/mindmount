@@ -64,6 +64,29 @@ impl AppPaths {
         self.config_dir.join("db").join(DATABASE_FILE_NAME)
     }
 
+    pub fn id_state_file(&self) -> PathBuf {
+        self.config_dir.join("id-state")
+    }
+
+    /// Holds an advisory lock for the duration of a CLI operation.
+    pub fn lock(&self) -> Result<fs::File> {
+        let path = self.config_dir.join("mindmount.lock");
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&path)
+            .with_context(|| format!("cannot open lock file {}", path.display()))?;
+        file.try_lock().with_context(|| {
+            format!(
+                "cannot lock {}; another Mindmount process may be running",
+                path.display()
+            )
+        })?;
+        Ok(file)
+    }
+
     pub fn ensure_dirs(&self) -> Result<()> {
         fs::create_dir_all(self.config_dir.join("db")).with_context(|| {
             format!(

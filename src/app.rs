@@ -19,9 +19,10 @@ pub async fn run(cli: Cli) -> Result<()> {
 
     let paths = AppPaths::from_env()?;
     paths.ensure_dirs()?;
+    let _lock = paths.lock()?;
     let mut config = Config::load_or_create(&paths.config_file())?;
     let database = Database::open(&paths.database_file()).await?;
-    let mut ids = Snowflake::new(config.node_id)?;
+    let mut ids = Snowflake::persistent(config.node_id, &paths.id_state_file())?;
 
     match cli.command {
         None => {

@@ -160,6 +160,31 @@ impl Database {
 
         let mut transaction = self.pool.begin().await?;
 
+        // A frontmatter ID can identify a document whose path changed. Move the
+        // existing row instead of deleting it so references remain intact.
+        let deleted_paths: HashSet<&str> = deletes.iter().map(String::as_str).collect();
+        for document in upserts {
+            let old_path: Option<String> = sqlx::query_scalar(
+                "SELECT relative_path FROM documents WHERE id = ? AND mount_id = ?",
+            )
+            .bind(document.id)
+            .bind(mount_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+            if let Some(old_path) = old_path.filter(|path| deleted_paths.contains(path.as_str())) {
+                sqlx::query(
+                    "UPDATE documents SET relative_path = ?
+                     WHERE id = ? AND mount_id = ? AND relative_path = ?",
+                )
+                .bind(&document.relative_path)
+                .bind(document.id)
+                .bind(mount_id)
+                .bind(old_path)
+                .execute(&mut *transaction)
+                .await?;
+            }
+        }
+
         for document in upserts {
             debug_assert_eq!(document.mount_id, mount_id);
 
@@ -297,6 +322,40 @@ mod tests {
 
         assert_eq!(mounts, 1);
         assert_eq!(documents, 0);
+    }
+
+    #[tokio::test]
+    async fn moving_document_preserves_reference_rows() {
+        let temp = tempdir().unwrap();
+        let database = Database::open(&temp.path().join("test.sqlite"))
+            .await
+            .unwrap();
+        let mount = mount(1, &temp.path().join("project/notes"));
+        database.sync_mounts(&[mount]).await.unwrap();
+        let now = Utc::now();
+        let mut document = Document {
+            id: 10,
+            mount_id: 1,
+            relative_path: "old.md".into(),
+            title: "Page".into(),
+            content_hash: "hash".into(),
+            modified_at: now,
+            indexed_at: now,
+        };
+        database
+            .apply_mount_sync(1, &[document.clone()], &[])
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO \"references\" (id, source_document_id, target_document_id, raw_reference, relation_type, source_kind) VALUES (1, 10, 10, 'page', 'link', 'markdown')")
+            .execute(&database.pool).await.unwrap();
+        document.relative_path = "new.md".into();
+        database
+            .apply_mount_sync(1, &[document], &["old.md".into()])
+            .await
+            .unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM \"references\" WHERE source_document_id = 10 AND target_document_id = 10")
+            .fetch_one(&database.pool).await.unwrap();
+        assert_eq!(count, 1);
     }
 
     #[tokio::test]

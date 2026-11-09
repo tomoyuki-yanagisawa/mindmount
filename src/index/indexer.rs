@@ -75,16 +75,16 @@ pub async fn sync_mount(
         };
 
         let hash = content_hash(&content);
-        let parsed = parse_document(&content);
-        let title = parsed.title(&fallback_title(relative));
         if let Some(previous) = existing.get(&relative_path) {
-            if previous.content_hash == hash && previous.title == title {
+            if previous.content_hash == hash {
                 report.unchanged += 1;
                 unchanged.push(previous.clone());
                 continue;
             }
         }
 
+        let parsed = parse_document(&content);
+        let title = parsed.title(&fallback_title(relative));
         let id = match parsed.frontmatter.id {
             Some(id) => id,
             None => match existing.get(&relative_path) {
@@ -281,6 +281,7 @@ mod tests {
             .remove(0);
         let id = document.id;
         document.title = "**Title**".into();
+        document.content_hash.clear(); // The title migration marks old rows for refresh.
         fixture
             .database
             .apply_mount_sync(1, &[document], &[])
@@ -310,6 +311,36 @@ mod tests {
         assert_eq!(documents.len(), 1);
         assert_eq!(documents[0].id, 42);
         assert_eq!(documents[0].relative_path, "new.md");
+    }
+
+    #[tokio::test]
+    async fn moving_over_an_existing_page_keeps_the_moved_id() {
+        let mut fixture = fixture().await;
+        fs::write(fixture.notes.join("old.md"), "---\nid: 42\n---\n# Old\n").unwrap();
+        fs::write(fixture.notes.join("new.md"), "---\nid: 43\n---\n# New\n").unwrap();
+        fixture.sync().await.unwrap();
+        fs::rename(fixture.notes.join("old.md"), fixture.notes.join("new.md")).unwrap();
+        fixture.sync().await.unwrap();
+        let documents = fixture.database.documents_for_mount(1).await.unwrap();
+        assert_eq!(documents.len(), 1);
+        assert_eq!(
+            (documents[0].id, documents[0].relative_path.as_str()),
+            (42, "new.md")
+        );
+    }
+
+    #[tokio::test]
+    async fn swapping_pages_with_frontmatter_ids_preserves_their_ids() {
+        let mut fixture = fixture().await;
+        fs::write(fixture.notes.join("a.md"), "---\nid: 42\n---\n").unwrap();
+        fs::write(fixture.notes.join("b.md"), "---\nid: 43\n---\n").unwrap();
+        fixture.sync().await.unwrap();
+        fs::rename(fixture.notes.join("a.md"), fixture.notes.join("temp")).unwrap();
+        fs::rename(fixture.notes.join("b.md"), fixture.notes.join("a.md")).unwrap();
+        fs::rename(fixture.notes.join("temp"), fixture.notes.join("b.md")).unwrap();
+        fixture.sync().await.unwrap();
+        let docs = fixture.database.documents_for_mount(1).await.unwrap();
+        assert_eq!((docs[0].id, docs[1].id), (43, 42));
     }
 
     #[tokio::test]

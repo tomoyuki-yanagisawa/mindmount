@@ -75,16 +75,16 @@ pub async fn sync_mount(
         };
 
         let hash = content_hash(&content);
+        let parsed = parse_document(&content);
+        let title = parsed.title(&fallback_title(relative));
         if let Some(previous) = existing.get(&relative_path) {
-            if previous.content_hash == hash {
+            if previous.content_hash == hash && previous.title == title {
                 report.unchanged += 1;
                 unchanged.push(previous.clone());
                 continue;
             }
         }
 
-        let parsed = parse_document(&content);
-        let title = parsed.title(&fallback_title(relative));
         let id = match parsed.frontmatter.id {
             Some(id) => id,
             None => match existing.get(&relative_path) {
@@ -266,6 +266,37 @@ mod tests {
         assert_eq!(report.scanned, 2);
         assert_eq!(report.unchanged, 2);
         assert_eq!(report.added + report.updated + report.removed, 0);
+    }
+
+    #[tokio::test]
+    async fn refreshes_stale_titles_without_changing_ids() {
+        let mut fixture = fixture().await;
+        fs::write(fixture.notes.join("page.md"), "# **Title**\n").unwrap();
+        fixture.sync().await.unwrap();
+        let mut document = fixture
+            .database
+            .documents_for_mount(1)
+            .await
+            .unwrap()
+            .remove(0);
+        let id = document.id;
+        document.title = "**Title**".into();
+        fixture
+            .database
+            .apply_mount_sync(1, &[document], &[])
+            .await
+            .unwrap();
+
+        let report = fixture.sync().await.unwrap();
+        let document = fixture
+            .database
+            .documents_for_mount(1)
+            .await
+            .unwrap()
+            .remove(0);
+        assert_eq!(report.updated, 1);
+        assert_eq!(document.id, id);
+        assert_eq!(document.title, "Title");
     }
 
     #[tokio::test]

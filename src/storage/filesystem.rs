@@ -7,10 +7,10 @@
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Component, Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
+use walkdir::WalkDir;
 
 #[derive(Debug, Clone)]
 pub struct MountRoot {
@@ -63,35 +63,15 @@ impl MountRoot {
         let permissions = fs::metadata(&target)
             .ok()
             .map(|metadata| metadata.permissions());
-        let temporary = parent.join(format!(
-            ".{}.{}.tmp",
-            target
-                .file_name()
-                .and_then(|name| name.to_str())
-                .unwrap_or("document"),
-            unique_suffix()
-        ));
-
-        let result = (|| -> Result<()> {
-            let mut file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)
-                .with_context(|| format!("cannot create temporary file {}", temporary.display()))?;
-            file.write_all(content.as_bytes())?;
-            file.sync_all()?;
-            if let Some(permissions) = permissions {
-                fs::set_permissions(&temporary, permissions)?;
-            }
-            fs::rename(&temporary, &target)
-                .with_context(|| format!("cannot replace {}", relative.display()))?;
-            Ok(())
-        })();
-
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary);
+        let mut file = tempfile::NamedTempFile::new_in(parent)?;
+        file.write_all(content.as_bytes())?;
+        if let Some(permissions) = permissions {
+            file.as_file().set_permissions(permissions)?;
         }
-        result
+        file.as_file().sync_all()?;
+        file.persist(&target)
+            .with_context(|| format!("cannot replace {}", relative.display()))?;
+        Ok(())
     }
 
     /// Creates a new file and refuses to overwrite an existing one.
@@ -126,37 +106,18 @@ impl MountRoot {
     /// skipped. The result is sorted for deterministic indexing.
     pub fn scan_markdown(&self) -> Result<Vec<PathBuf>> {
         let mut files = Vec::new();
-        self.walk(&self.root, Path::new(""), &mut files)?;
-        files.sort();
-        Ok(files)
-    }
-
-    fn walk(&self, directory: &Path, prefix: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
-        let mut entries: Vec<_> = fs::read_dir(directory)
-            .with_context(|| format!("cannot read directory {}", directory.display()))?
-            .collect::<std::io::Result<Vec<_>>>()?;
-        entries.sort_by_key(|entry| entry.file_name());
-
+        let entries = WalkDir::new(&self.root)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| entry.depth() == 0 || !is_hidden(entry.file_name()));
         for entry in entries {
-            let file_type = entry.file_type()?;
-            if file_type.is_symlink() {
-                continue;
-            }
-
-            let name = entry.file_name();
-            if is_hidden(&name) {
-                continue;
-            }
-
-            let relative = prefix.join(&name);
-            if file_type.is_dir() {
-                self.walk(&entry.path(), &relative, files)?;
-            } else if file_type.is_file() && is_markdown(&name) {
-                files.push(relative);
+            let entry = entry.with_context(|| format!("cannot scan {}", self.root.display()))?;
+            if entry.file_type().is_file() && is_markdown(entry.file_name()) {
+                files.push(entry.path().strip_prefix(&self.root)?.to_path_buf());
             }
         }
-
-        Ok(())
+        files.sort();
+        Ok(files)
     }
 
     fn resolve_existing(&self, relative: &Path) -> Result<PathBuf> {
@@ -257,14 +218,6 @@ fn is_markdown(name: &std::ffi::OsStr) -> bool {
     };
     let extension = extension.to_string_lossy();
     extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("markdown")
-}
-
-fn unique_suffix() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    format!("{}-{nanos}", std::process::id())
 }
 
 #[cfg(test)]

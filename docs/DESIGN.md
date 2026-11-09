@@ -258,6 +258,7 @@ Snowflake ID 自体は変更しません。
 
 1. frontmatter の `title`
 2. コードフェンス外の最初の ATX H1
+   - 見出し内の Markdown 装飾を除いたテキストを使用する
 3. ファイル名（拡張子なし）
 
 ### 7.3 frontmatter

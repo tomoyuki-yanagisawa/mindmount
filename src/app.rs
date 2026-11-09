@@ -172,7 +172,7 @@ async fn register_mount(
         .await
         .with_context(|| {
             format!(
-                "mount {} was registered but indexing failed; run `mindmount reindex`",
+                "mount {} was registered but indexing failed; run `mindmount index rescan`",
                 mount.id
             )
         })?;

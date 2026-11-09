@@ -265,6 +265,7 @@ mindmount index pages
 
 1. frontmatter の `title`
 2. コードフェンス外の最初の ATX H1（`# Title`）
+   - 見出し内の Markdown 装飾を除いたテキストを使用する
 3. ファイル名（拡張子なし）
 
 ### frontmatter

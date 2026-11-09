@@ -1,6 +1,6 @@
 use std::env;
-use std::ffi::OsString;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -202,29 +202,16 @@ fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
 
-    let file_name = path
-        .file_name()
-        .map(OsString::from)
-        .unwrap_or_else(|| OsString::from("config.toml"));
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or_default();
-    let mut temporary_name = OsString::from(".");
-    temporary_name.push(&file_name);
-    temporary_name.push(format!(".{}-{nanos}.tmp", std::process::id()));
-    let temporary = parent.join(temporary_name);
-
-    let result = (|| -> Result<()> {
-        fs::write(&temporary, contents)?;
-        fs::rename(&temporary, path)?;
-        Ok(())
-    })();
-
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+    temporary.write_all(contents)?;
+    if let Ok(metadata) = fs::metadata(path) {
+        temporary
+            .as_file()
+            .set_permissions(metadata.permissions())?;
     }
-    result
+    temporary.as_file().sync_all()?;
+    temporary.persist(path)?;
+    Ok(())
 }
 
 #[cfg(test)]

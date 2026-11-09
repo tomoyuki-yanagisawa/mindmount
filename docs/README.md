@@ -1,0 +1,37 @@
+# Mindmount ドキュメント
+
+Mindmount のドキュメント一覧です。
+
+Mindmount はローカルファーストの OSS プロジェクトです。自分のメモリを AI と
+共有するための「個人のホーム」として設計しています。単一ユーザー・
+ローカル専用です。
+
+| ドキュメント | 内容 |
+|---|---|
+| [USAGE.md](USAGE.md) | CLI の使い方、設定、データ配置、トラブルシューティング |
+| [DESIGN.md](DESIGN.md) | アーキテクチャ、データモデル、ID、索引、セキュリティ |
+| [ROADMAP.md](ROADMAP.md) | Phase ごとの実装状況と次の作業 |
+| [DECISIONS.md](DECISIONS.md) | 設計上の決定（ローカル Web は閲覧専用、CLI のグループ化など） |
+
+## 読み方
+
+- `USAGE.md` と `DESIGN.md` は、現在の実装に基づく挙動を説明します。
+- 仕様と実装がずれる場合は、まず `DECISIONS.md` と `DESIGN.md` の「現状の制約」を確認してください。
+- 現在は **Phase 1（CLI / Storage）** まで実装済みです。Phase 2 以降は `ROADMAP.md` を参照してください。
+
+## 現在の状態
+
+- マウント登録、一覧、解除
+- `config.toml` を正本としたマウント管理
+- SQLite による派生インデックス
+- Snowflake ID
+- Markdown の走査、タイトル抽出、内容ハッシュ、差分反映
+- `index rescan` による再インデックス
+- `index pages` によるページ一覧
+
+未実装の主な機能:
+
+- ファイル監視による自動反映（Phase 2）
+- 全文検索・参照・バックリンク（Phase 2）
+- MCP サーバー（Phase 3）
+- Web UI（Phase 4、**閲覧専用ビューア**）

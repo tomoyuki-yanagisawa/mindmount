@@ -62,6 +62,10 @@ pub enum IndexCommand {
         #[arg(short = 'm', long = "mount")]
         mount_id: Option<i64>,
     },
+    /// List links from a page.
+    References { document_id: i64 },
+    /// List pages linking to a page.
+    Backlinks { document_id: i64 },
 }
 
 /// Options for the root invocation (`mindmount -p ... -d ...`).

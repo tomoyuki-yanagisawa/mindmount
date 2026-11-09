@@ -29,10 +29,10 @@ Mindmount はローカルファーストの OSS プロジェクトです。自�
 - `index rescan` による再インデックス
 - `index pages` によるページ一覧
 - `index search` による全文検索
+- `index references` / `index backlinks` による参照一覧
 
 未実装の主な機能:
 
 - ファイル監視による自動反映（Phase 2）
-- 参照・バックリンク（Phase 2）
 - MCP サーバー（Phase 3）
 - Web UI（Phase 4、**閲覧専用ビューア**）

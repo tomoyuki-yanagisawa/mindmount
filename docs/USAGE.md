@@ -42,6 +42,8 @@ mindmount storage unmount <MOUNT_ID>
 mindmount index rescan
 mindmount index pages [-m <MOUNT_ID>]
 mindmount index search <QUERY> [-m <MOUNT_ID>]
+mindmount index references <DOCUMENT_ID>
+mindmount index backlinks <DOCUMENT_ID>
 
 mindmount serve [--host <HOST>] [--port <PORT>]
 mindmount mcp
@@ -57,6 +59,8 @@ mindmount -p <PATH> -d <PATH> [-n <NAME>] [--host <HOST>] [--port <PORT>]
 | `index rescan` | 全マウントの index を再構築する |
 | `index pages` | index 済みページを一覧表示する |
 | `index search` | index 済み Markdown を文字列で検索する |
+| `index references` | ページからのリンクを一覧表示する |
+| `index backlinks` | ページへのリンクを一覧表示する |
 | `serve` | 読み取り専用 Web ビューアを起動する（Phase 4、未実装） |
 | `mcp` | MCP stdio サーバーを起動する（Phase 3、未実装） |
 
@@ -168,6 +172,20 @@ mindmount index pages      # まだ古い
 mindmount index rescan     # ここで反映
 mindmount index pages      # 新しい内容
 ```
+
+## index references / backlinks
+
+```bash
+mindmount index references <DOCUMENT_ID>
+mindmount index backlinks <DOCUMENT_ID>
+```
+
+ドキュメント ID は `index pages` で確認できます。Markdown リンクと `[[Wiki リンク]]` を
+対象とし、リンク先は同じマウント内で解決します。Wiki リンクはページ名・タイトル・パスから
+探し、候補が複数ある場合は未解決として記録します。外部 URL と未解決リンクの `TARGET_ID` は
+`-` です。コードブロック・インラインコード内のリンクは対象外です。
+パーセントエンコードされたパスの解決は未対応です。編集や移動後、またアップグレード後は
+`index rescan` が必要です。
 
 ## index search
 
@@ -442,7 +460,6 @@ SQLite の WAL と 5 秒の busy timeout を使っています。別プロセス
 ## 現時点の制約
 
 - ファイル監視なし（Phase 2）
-- 参照・バックリンクなし（Phase 2）
 - MCP なし（Phase 3）
 - Web ビューアなし（Phase 4）
 - ローカル Web UI は閲覧専用（編集機能なし）

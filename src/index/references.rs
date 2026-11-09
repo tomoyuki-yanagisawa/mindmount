@@ -84,7 +84,18 @@ fn split_anchor(value: &str) -> (String, Option<String>) {
 }
 
 pub fn resolve(reference: &Reference, source: &Document, documents: &[Document]) -> Option<i64> {
-    let target = reference.target.as_str();
+    let encoded = reference.target.as_str();
+    let target = if reference.kind == "markdown" {
+        percent_encoding::percent_decode_str(encoded)
+            .decode_utf8()
+            .ok()?
+    } else {
+        encoded.into()
+    };
+    let target = target.as_ref();
+    if target.contains('\0') {
+        return None;
+    }
     if target.contains("://") || target.starts_with("mailto:") || target.starts_with('/') {
         return None;
     }

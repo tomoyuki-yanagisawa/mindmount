@@ -879,6 +879,7 @@ dependencies = [
  "chrono",
  "clap",
  "notify",
+ "percent-encoding",
  "pulldown-cmark",
  "serde",
  "sha2",

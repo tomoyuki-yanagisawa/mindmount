@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use mindmount::config::Config;
 use tempfile::TempDir;
@@ -123,6 +124,86 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     let mut files = BTreeMap::new();
     walk(root, root, &mut files);
     files
+}
+
+struct WatchProcess(Child);
+
+impl Drop for WatchProcess {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn wait_for_pages(env: &TestEnv, expected: &str) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let output = env.run(&["index", "pages"]);
+        if output.status.success() && stdout(&output).contains(expected) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "watch did not index {expected}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn watch_reindexes_at_start_and_after_atomic_save() {
+    let env = TestEnv::new();
+    assert_success(&env.mount("Notes"));
+    fs::write(env.notes.join("index.md"), "# Startup change\n").unwrap();
+    let child = env
+        .command()
+        .args(["index", "watch"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let _watch = WatchProcess(child);
+    wait_for_pages(&env, "Startup change");
+
+    fs::write(env.notes.join(".new.md"), "# Atomic change\n").unwrap();
+    fs::rename(env.notes.join(".new.md"), env.notes.join("index.md")).unwrap();
+    wait_for_pages(&env, "Atomic change");
+
+    let other = env.project.join("other");
+    fs::create_dir(&other).unwrap();
+    fs::write(other.join("other.md"), "# Other mount\n").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let output = env.run(&[
+            "storage",
+            "mount",
+            "-p",
+            env.project.to_str().unwrap(),
+            "-d",
+            "other",
+        ]);
+        if output.status.success() {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "mount failed: {}",
+            stderr(&output)
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    fs::write(other.join("other.md"), "# Watched other mount\n").unwrap();
+    wait_for_pages(&env, "Watched other mount");
+    fs::remove_file(other.join("other.md")).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let output = env.run(&["index", "pages"]);
+        if output.status.success() && !stdout(&output).contains("Watched other mount") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "watch did not remove the deleted page"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 #[test]

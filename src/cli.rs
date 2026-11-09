@@ -52,6 +52,8 @@ pub enum StorageCommand {
 pub enum IndexCommand {
     /// Rebuild the derived index for every registered mount.
     Rescan,
+    /// Watch mounted directories and update the index until interrupted.
+    Watch,
     /// List indexed pages.
     Pages(PagesOptions),
     /// Search indexed Markdown by literal text.

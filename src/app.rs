@@ -19,6 +19,14 @@ pub async fn run(cli: Cli) -> Result<()> {
 
     let paths = AppPaths::from_env()?;
     paths.ensure_dirs()?;
+    if matches!(
+        cli.command,
+        Some(Command::Index {
+            command: IndexCommand::Watch
+        })
+    ) {
+        return crate::index::watch::run(&paths).await;
+    }
     let _lock = paths.lock()?;
     let mut config = Config::load_or_create(&paths.config_file())?;
     let database = Database::open(&paths.database_file()).await?;
@@ -67,6 +75,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         },
         Some(Command::Index { command }) => match command {
             IndexCommand::Rescan => reindex(&config, &database, &mut ids).await?,
+            IndexCommand::Watch => unreachable!("watch is handled before acquiring the lock"),
             IndexCommand::Pages(options) => {
                 list_pages(&config, &database, options.mount_id).await?
             }
@@ -383,7 +392,11 @@ async fn unmount(
     Ok(())
 }
 
-async fn reindex(config: &Config, database: &Database, ids: &mut Snowflake) -> Result<()> {
+pub(crate) async fn reindex(
+    config: &Config,
+    database: &Database,
+    ids: &mut Snowflake,
+) -> Result<()> {
     database.sync_mounts(&config.mounts).await?;
 
     if config.mounts.is_empty() {

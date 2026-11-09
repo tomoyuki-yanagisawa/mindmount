@@ -3,5 +3,6 @@
 //! These functions orchestrate config, storage, indexing, and the database.
 //! They return data and errors but never print.
 
+pub mod document;
 pub mod index;
 pub mod mount;

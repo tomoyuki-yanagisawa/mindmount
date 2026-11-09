@@ -66,6 +66,33 @@ impl Database {
         self.list_documents(Some(mount_id)).await
     }
 
+    pub async fn get_document(&self, id: i64) -> Result<Option<Document>> {
+        let rows = sqlx::query(
+            "SELECT id, mount_id, relative_path, title, content_hash, modified_at, indexed_at
+             FROM documents WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.first().map(map_document).transpose()
+    }
+
+    pub async fn document_by_path(
+        &self,
+        mount_id: i64,
+        relative_path: &str,
+    ) -> Result<Option<Document>> {
+        let rows = sqlx::query(
+            "SELECT id, mount_id, relative_path, title, content_hash, modified_at, indexed_at
+             FROM documents WHERE mount_id = ? AND relative_path = ?",
+        )
+        .bind(mount_id)
+        .bind(relative_path)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.first().map(map_document).transpose()
+    }
+
     pub async fn document_exists(&self, id: i64) -> Result<bool> {
         Ok(
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM documents WHERE id = ?")

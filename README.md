@@ -91,6 +91,8 @@ mindmount mcp
 ```text
 $XDG_CONFIG_HOME/mindmount/   # 未設定時: ~/.config/mindmount/
 ├── config.toml               # マウント設定の正本
+├── id-state                  # ID 発行の予約状態
+├── mindmount.lock            # プロセス間ロック
 └── db/mindmount.sqlite       # 派生 index
 ```
 

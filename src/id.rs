@@ -19,6 +19,7 @@ const SEQUENCE_BITS: u64 = 12;
 const MAX_NODE_ID: u16 = (1 << NODE_BITS) - 1;
 const MAX_SEQUENCE: u16 = (1 << SEQUENCE_BITS) - 1;
 const MAX_TIMESTAMP: u64 = (1 << TIMESTAMP_BITS) - 1;
+const RESERVATION_MILLIS: u64 = 64;
 
 #[derive(Debug, thiserror::Error)]
 pub enum IdError {
@@ -42,6 +43,7 @@ pub struct Snowflake {
     sequence: u16,
     now_ms: Clock,
     state_path: Option<PathBuf>,
+    reserved_timestamp: Option<u64>,
 }
 
 impl Snowflake {
@@ -61,6 +63,9 @@ impl Snowflake {
                 if ((id >> SEQUENCE_BITS) & u64::from(MAX_NODE_ID)) == u64::from(node_id) {
                     generator.last_timestamp = Some(id >> (NODE_BITS + SEQUENCE_BITS));
                     generator.sequence = (id & u64::from(MAX_SEQUENCE)) as u16;
+                    if generator.sequence == MAX_SEQUENCE {
+                        generator.reserved_timestamp = generator.last_timestamp;
+                    }
                 }
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -80,6 +85,7 @@ impl Snowflake {
             sequence: 0,
             now_ms,
             state_path: None,
+            reserved_timestamp: None,
         })
     }
 
@@ -116,14 +122,25 @@ impl Snowflake {
         let id = (timestamp << (NODE_BITS + SEQUENCE_BITS))
             | (u64::from(self.node_id) << SEQUENCE_BITS)
             | u64::from(self.sequence);
-        if let Some(path) = &self.state_path {
+        if let Some(path) = self.state_path.as_ref().filter(|_| {
+            self.reserved_timestamp
+                .is_none_or(|reserved| timestamp > reserved)
+        }) {
             let parent = path.parent().ok_or(IdError::InvalidState)?;
             let mut file = tempfile::NamedTempFile::new_in(parent)?;
-            write!(file, "{id}")?;
+            // Persist a high-water mark before issuing IDs, including after a crash.
+            let reserved_timestamp = timestamp
+                .saturating_add(RESERVATION_MILLIS - 1)
+                .min(MAX_TIMESTAMP);
+            let reserved = (reserved_timestamp << (NODE_BITS + SEQUENCE_BITS))
+                | (u64::from(self.node_id) << SEQUENCE_BITS)
+                | u64::from(MAX_SEQUENCE);
+            write!(file, "{reserved}")?;
             file.as_file().sync_all()?;
             file.persist(path).map_err(|error| error.error)?;
             #[cfg(unix)]
             fs::File::open(parent)?.sync_all()?;
+            self.reserved_timestamp = Some(reserved_timestamp);
         }
         Ok(id as i64)
     }
@@ -191,6 +208,34 @@ mod tests {
         let mut second = Snowflake::persistent(1, &path).unwrap();
         second.now_ms = Box::new(|| at(100));
         assert!(second.next_id().unwrap() > first_id);
+    }
+
+    #[test]
+    fn reserves_a_range_and_renews_it_when_exhausted() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("state");
+        let mut ids = generator(1, vec![at(100), at(101), at(164)]);
+        ids.state_path = Some(path.clone());
+        let first = ids.next_id().unwrap();
+        let reservation = fs::read_to_string(&path).unwrap();
+        assert!(ids.next_id().unwrap() > first);
+        assert_eq!(fs::read_to_string(&path).unwrap(), reservation);
+        ids.next_id().unwrap();
+        assert_ne!(fs::read_to_string(path).unwrap(), reservation);
+    }
+
+    #[test]
+    fn upgrades_old_single_id_state_before_issuing_more() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("state");
+        let previous = (100_u64 << (NODE_BITS + SEQUENCE_BITS)) | (1 << SEQUENCE_BITS) | 5;
+        fs::write(&path, previous.to_string()).unwrap();
+        let mut first = Snowflake::persistent(1, &path).unwrap();
+        first.now_ms = Box::new(|| at(100));
+        let issued = first.next_id().unwrap();
+        let mut restarted = Snowflake::persistent(1, &path).unwrap();
+        restarted.now_ms = Box::new(|| at(100));
+        assert!(restarted.next_id().unwrap() > issued);
     }
 
     #[test]

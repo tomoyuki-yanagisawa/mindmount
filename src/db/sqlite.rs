@@ -160,29 +160,62 @@ impl Database {
 
         let mut transaction = self.pool.begin().await?;
 
-        // A frontmatter ID can identify a document whose path changed. Move the
-        // existing row instead of deleting it so references remain intact.
-        let deleted_paths: HashSet<&str> = deletes.iter().map(String::as_str).collect();
-        for document in upserts {
-            let old_path: Option<String> = sqlx::query_scalar(
-                "SELECT relative_path FROM documents WHERE id = ? AND mount_id = ?",
-            )
-            .bind(document.id)
+        let rows = sqlx::query("SELECT id, relative_path FROM documents WHERE mount_id = ?")
             .bind(mount_id)
-            .fetch_optional(&mut *transaction)
+            .fetch_all(&mut *transaction)
             .await?;
-            if let Some(old_path) = old_path.filter(|path| deleted_paths.contains(path.as_str())) {
-                sqlx::query(
-                    "UPDATE documents SET relative_path = ?
-                     WHERE id = ? AND mount_id = ? AND relative_path = ?",
-                )
+        let existing: HashMap<i64, String> = rows
+            .iter()
+            .map(|row| Ok((row.try_get("id")?, row.try_get("relative_path")?)))
+            .collect::<std::result::Result<_, sqlx::Error>>()?;
+        let deleted_paths: HashSet<&str> = deletes.iter().map(String::as_str).collect();
+        let upsert_paths: HashSet<&str> = upserts
+            .iter()
+            .map(|doc| doc.relative_path.as_str())
+            .collect();
+        let moves: Vec<&Document> = upserts
+            .iter()
+            .filter(|doc| {
+                existing.get(&doc.id).is_some_and(|old| {
+                    old != &doc.relative_path
+                        && (deleted_paths.contains(old.as_str())
+                            || upsert_paths.contains(old.as_str()))
+                })
+            })
+            .collect();
+        let moving_ids: HashSet<i64> = moves.iter().map(|doc| doc.id).collect();
+        let move_destinations: HashSet<&str> =
+            moves.iter().map(|doc| doc.relative_path.as_str()).collect();
+
+        // Move through paths that cannot occur on disk, allowing swaps and
+        // replacements while preserving the rows (and their references).
+        for document in &moves {
+            sqlx::query("UPDATE documents SET relative_path = ? WHERE id = ? AND mount_id = ?")
+                .bind(format!("\0mindmount-move-{}", document.id))
+                .bind(document.id)
+                .bind(mount_id)
+                .execute(&mut *transaction)
+                .await?;
+        }
+        for (id, path) in &existing {
+            if !moving_ids.contains(id)
+                && (deleted_paths.contains(path.as_str())
+                    || move_destinations.contains(path.as_str()))
+            {
+                sqlx::query("DELETE FROM documents WHERE id = ? AND mount_id = ?")
+                    .bind(id)
+                    .bind(mount_id)
+                    .execute(&mut *transaction)
+                    .await?;
+            }
+        }
+        for document in moves {
+            sqlx::query("UPDATE documents SET relative_path = ? WHERE id = ? AND mount_id = ?")
                 .bind(&document.relative_path)
                 .bind(document.id)
                 .bind(mount_id)
-                .bind(old_path)
                 .execute(&mut *transaction)
                 .await?;
-            }
         }
 
         for document in upserts {
@@ -208,14 +241,6 @@ impl Database {
             .bind(document.indexed_at.timestamp_millis())
             .execute(&mut *transaction)
             .await?;
-        }
-
-        for relative_path in deletes {
-            sqlx::query("DELETE FROM documents WHERE mount_id = ? AND relative_path = ?")
-                .bind(mount_id)
-                .bind(relative_path)
-                .execute(&mut *transaction)
-                .await?;
         }
 
         transaction.commit().await?;
@@ -274,6 +299,42 @@ mod tests {
         assert!(names.contains(&"mounts".to_string()));
         assert!(names.contains(&"documents".to_string()));
         assert!(names.contains(&"references".to_string()));
+    }
+
+    #[tokio::test]
+    async fn title_migration_marks_existing_documents_for_rescan() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("test.sqlite");
+        let database = Database::open(&path).await.unwrap();
+        let mount = mount(1, &temp.path().join("project/notes"));
+        database.sync_mounts(&[mount]).await.unwrap();
+        let now = Utc::now();
+        database
+            .apply_mount_sync(
+                1,
+                &[Document {
+                    id: 10,
+                    mount_id: 1,
+                    relative_path: "page.md".into(),
+                    title: "old".into(),
+                    content_hash: "old-hash".into(),
+                    modified_at: now,
+                    indexed_at: now,
+                }],
+                &[],
+            )
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 2")
+            .execute(&database.pool)
+            .await
+            .unwrap();
+        database.pool.close().await;
+        let reopened = Database::open(&path).await.unwrap();
+        assert_eq!(
+            reopened.documents_for_mount(1).await.unwrap()[0].content_hash,
+            ""
+        );
     }
 
     #[tokio::test]

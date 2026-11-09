@@ -147,6 +147,18 @@ fn wait_for_pages(env: &TestEnv, expected: &str) {
     }
 }
 
+fn wait_for_pages_absent(env: &TestEnv, expected: &str) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let output = env.run(&["index", "pages"]);
+        if output.status.success() && !stdout(&output).contains(expected) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "watch did not remove {expected}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 fn git(project: &Path, args: &[&str]) {
     let output = Command::new("git")
         .arg("-C")
@@ -170,18 +182,14 @@ fn git(project: &Path, args: &[&str]) {
 }
 
 #[test]
-fn watch_preserves_id_during_temporary_file_absence() {
+fn watch_eventually_reindexes_after_temporary_file_absence() {
     let env = TestEnv::new();
+    fs::write(
+        env.notes.join("index.md"),
+        "---\nid: 424242\n---\n# Index\n",
+    )
+    .unwrap();
     assert_success(&env.mount("Notes"));
-    let pages = stdout(&env.run(&["index", "pages"]));
-    let original_id = pages
-        .lines()
-        .find(|line| line.contains("\tindex.md\t"))
-        .unwrap()
-        .split('\t')
-        .next()
-        .unwrap()
-        .to_owned();
     fs::write(env.notes.join("ready.md"), "# Watch ready\n").unwrap();
     let child = env
         .command()
@@ -197,20 +205,23 @@ fn watch_preserves_id_during_temporary_file_absence() {
         env.notes.join(".temporarily-missing"),
     )
     .unwrap();
-    std::thread::sleep(Duration::from_millis(1400));
-    wait_for_pages(&env, "\tindex.md\tIndex");
+    // Without the old grace period, a missing page leaves the index promptly.
+    wait_for_pages_absent(&env, "\tindex.md\t");
     fs::rename(
         env.notes.join(".temporarily-missing"),
         env.notes.join("index.md"),
     )
     .unwrap();
-    fs::write(env.notes.join("index.md"), "# Restored\n").unwrap();
+    fs::write(
+        env.notes.join("index.md"),
+        "---\nid: 424242\n---\n# Restored\n",
+    )
+    .unwrap();
     wait_for_pages(&env, "Restored");
     let pages = stdout(&env.run(&["index", "pages"]));
     assert!(pages
         .lines()
-        .any(|line| line.starts_with(&format!("{original_id}\t"))
-            && line.contains("\tindex.md\tRestored")));
+        .any(|line| { line.starts_with("424242\t") && line.contains("\tindex.md\tRestored") }));
 }
 
 #[test]

@@ -296,62 +296,25 @@ impl Database {
 
         let mut transaction = self.pool.begin().await?;
 
-        let rows = sqlx::query("SELECT id, relative_path FROM documents WHERE mount_id = ?")
+        for path in deletes {
+            sqlx::query("DELETE FROM documents WHERE mount_id = ? AND relative_path = ?")
+                .bind(mount_id)
+                .bind(path)
+                .execute(&mut *transaction)
+                .await?;
+        }
+        // Deleting a row also nulls the links that point at it, so an existing
+        // row is kept when the same ID stays on its path. Only a stale row that
+        // occupies the target path with another ID is removed.
+        for document in upserts {
+            sqlx::query(
+                "DELETE FROM documents WHERE mount_id = ? AND relative_path = ? AND id != ?",
+            )
             .bind(mount_id)
-            .fetch_all(&mut *transaction)
+            .bind(&document.relative_path)
+            .bind(document.id)
+            .execute(&mut *transaction)
             .await?;
-        let existing: HashMap<i64, String> = rows
-            .iter()
-            .map(|row| Ok((row.try_get("id")?, row.try_get("relative_path")?)))
-            .collect::<std::result::Result<_, sqlx::Error>>()?;
-        let deleted_paths: HashSet<&str> = deletes.iter().map(String::as_str).collect();
-        let upsert_paths: HashSet<&str> = upserts
-            .iter()
-            .map(|doc| doc.relative_path.as_str())
-            .collect();
-        let moves: Vec<&Document> = upserts
-            .iter()
-            .filter(|doc| {
-                existing.get(&doc.id).is_some_and(|old| {
-                    old != &doc.relative_path
-                        && (deleted_paths.contains(old.as_str())
-                            || upsert_paths.contains(old.as_str()))
-                })
-            })
-            .collect();
-        let moving_ids: HashSet<i64> = moves.iter().map(|doc| doc.id).collect();
-        let move_destinations: HashSet<&str> =
-            moves.iter().map(|doc| doc.relative_path.as_str()).collect();
-
-        // Move through paths that cannot occur on disk, allowing swaps and
-        // replacements while preserving the rows (and their references).
-        for document in &moves {
-            sqlx::query("UPDATE documents SET relative_path = ? WHERE id = ? AND mount_id = ?")
-                .bind(format!("\0mindmount-move-{}", document.id))
-                .bind(document.id)
-                .bind(mount_id)
-                .execute(&mut *transaction)
-                .await?;
-        }
-        for (id, path) in &existing {
-            if !moving_ids.contains(id)
-                && (deleted_paths.contains(path.as_str())
-                    || move_destinations.contains(path.as_str()))
-            {
-                sqlx::query("DELETE FROM documents WHERE id = ? AND mount_id = ?")
-                    .bind(id)
-                    .bind(mount_id)
-                    .execute(&mut *transaction)
-                    .await?;
-            }
-        }
-        for document in moves {
-            sqlx::query("UPDATE documents SET relative_path = ? WHERE id = ? AND mount_id = ?")
-                .bind(&document.relative_path)
-                .bind(document.id)
-                .bind(mount_id)
-                .execute(&mut *transaction)
-                .await?;
         }
 
         for document in upserts {
@@ -394,6 +357,8 @@ impl Database {
         let rows = sqlx::query("SELECT d.id, d.mount_id, d.relative_path, d.title, d.content_hash, d.modified_at, d.indexed_at, s.body FROM documents d LEFT JOIN document_search s ON d.id = s.rowid WHERE d.mount_id = ?")
             .bind(mount_id).fetch_all(&mut *transaction).await?;
         let documents: Vec<Document> = rows.iter().map(map_document).collect::<Result<_>>()?;
+        // Adding, removing, or retitling a page can change how other pages'
+        // links resolve, so rebuild the mount's references as a whole.
         for (row, document) in rows.iter().zip(&documents) {
             let body: Option<String> = row.try_get("body")?;
             let Some(body) = body else { continue };
@@ -627,7 +592,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn moving_document_preserves_reference_rows() {
+    async fn moving_document_rebuilds_reference_rows_from_content() {
         let temp = tempdir().unwrap();
         let database = Database::open(&temp.path().join("test.sqlite"))
             .await
@@ -644,20 +609,27 @@ mod tests {
             modified_at: now,
             indexed_at: now,
         };
+        let contents = HashMap::from([(10, "[Page](page.md)\n".to_string())]);
         database
-            .apply_mount_sync(1, &[document.clone()], &[])
+            .apply_mount_sync_with_content(1, &[document.clone()], &[], &contents)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO \"references\" (id, source_document_id, target_document_id, raw_reference, relation_type, source_kind) VALUES (1, 10, 10, 'page', 'link', 'markdown')")
-            .execute(&database.pool).await.unwrap();
         document.relative_path = "new.md".into();
         database
-            .apply_mount_sync(1, &[document], &["old.md".into()])
+            .apply_mount_sync_with_content(1, &[document], &["old.md".into()], &contents)
             .await
             .unwrap();
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM \"references\" WHERE source_document_id = 10 AND target_document_id = 10")
-            .fetch_one(&database.pool).await.unwrap();
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM \"references\" WHERE source_document_id = 10")
+                .fetch_one(&database.pool)
+                .await
+                .unwrap();
         assert_eq!(count, 1);
+        let path: String = sqlx::query_scalar("SELECT relative_path FROM documents WHERE id = 10")
+            .fetch_one(&database.pool)
+            .await
+            .unwrap();
+        assert_eq!(path, "new.md");
     }
 
     #[tokio::test]
@@ -693,5 +665,63 @@ mod tests {
             .await
             .unwrap();
         assert!(database.documents_for_mount(1).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn updating_content_keeps_inbound_references() {
+        let temp = tempdir().unwrap();
+        let database = Database::open(&temp.path().join("test.sqlite"))
+            .await
+            .unwrap();
+        let mount = mount(1, &temp.path().join("project/notes"));
+        database.sync_mounts(&[mount]).await.unwrap();
+        let now = Utc::now();
+        let source = Document {
+            id: 10,
+            mount_id: 1,
+            relative_path: "source.md".into(),
+            title: "Source".into(),
+            content_hash: "source".into(),
+            modified_at: now,
+            indexed_at: now,
+        };
+        let mut target = Document {
+            id: 20,
+            mount_id: 1,
+            relative_path: "target.md".into(),
+            title: "Target".into(),
+            content_hash: "v1".into(),
+            modified_at: now,
+            indexed_at: now,
+        };
+        database
+            .apply_mount_sync_with_content(
+                1,
+                &[source.clone(), target.clone()],
+                &[],
+                &HashMap::from([
+                    (10, "[Target](target.md)\n".to_string()),
+                    (20, "# Target\n".to_string()),
+                ]),
+            )
+            .await
+            .unwrap();
+        target.content_hash = "v2".into();
+        database
+            .apply_mount_sync_with_content(
+                1,
+                &[target],
+                &[],
+                &HashMap::from([(20, "# Target\n\nedited\n".to_string())]),
+            )
+            .await
+            .unwrap();
+        let target_id: Option<i64> = sqlx::query_scalar(
+            "SELECT target_document_id FROM \"references\" WHERE source_document_id = 10",
+        )
+        .fetch_one(&database.pool)
+        .await
+        .unwrap();
+        assert_eq!(target_id, Some(20));
     }
 }

@@ -88,13 +88,33 @@ impl AppPaths {
     }
 
     pub fn ensure_dirs(&self) -> Result<()> {
-        fs::create_dir_all(self.config_dir.join("db")).with_context(|| {
-            format!(
-                "cannot create the Mindmount data directory {}",
-                self.config_dir.display()
-            )
-        })
+        ensure_private_dir(&self.config_dir)?;
+        ensure_private_dir(&self.config_dir.join("db"))
     }
+}
+
+fn ensure_private_dir(path: &Path) -> Result<()> {
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder
+        .create(path)
+        .with_context(|| format!("cannot create directory {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let permissions = fs::metadata(path)?.permissions();
+        let restricted = permissions.mode() & !0o077;
+        if restricted != permissions.mode() {
+            fs::set_permissions(path, fs::Permissions::from_mode(restricted))
+                .with_context(|| format!("cannot restrict permissions on {}", path.display()))?;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

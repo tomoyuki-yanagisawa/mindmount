@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
@@ -6,6 +5,7 @@ use chrono::Utc;
 
 use crate::cli::{Cli, Command, IndexCommand, StorageCommand};
 use crate::config::{AppPaths, Config, Mount};
+use crate::core::document::Document;
 use crate::db::sqlite::Database;
 use crate::id::Snowflake;
 use crate::index::indexer::{self, SyncReport};
@@ -268,34 +268,12 @@ async fn list_pages(config: &Config, database: &Database, mount_id: Option<i64>)
         }
     }
 
-    let mut documents = database.list_documents(mount_id).await?;
+    let documents = database.list_documents(mount_id).await?;
     if documents.is_empty() {
         println!("No pages indexed.");
         return Ok(());
     }
-    documents.sort_by(|left, right| {
-        left.mount_id
-            .cmp(&right.mount_id)
-            .then_with(|| left.relative_path.cmp(&right.relative_path))
-    });
-
-    let mount_names: HashMap<i64, &str> = config
-        .mounts
-        .iter()
-        .map(|mount| (mount.id, mount.name.as_str()))
-        .collect();
-
-    println!("ID\tMOUNT\tPATH\tTITLE");
-    for document in documents {
-        let mount_name = mount_names
-            .get(&document.mount_id)
-            .copied()
-            .unwrap_or("(unknown)");
-        println!(
-            "{}\t{}\t{}\t{}",
-            document.id, mount_name, document.relative_path, document.title
-        );
-    }
+    print_pages(config, documents);
     Ok(())
 }
 
@@ -323,8 +301,13 @@ async fn search_pages(
         println!("No matching pages.");
         return Ok(());
     }
+    print_pages(config, results);
+    Ok(())
+}
+
+fn print_pages(config: &Config, documents: Vec<Document>) {
     println!("ID\tMOUNT\tPATH\tTITLE");
-    for document in results {
+    for document in documents {
         let name = config
             .find_by_id(document.mount_id)
             .map(|mount| mount.name.as_str())
@@ -334,7 +317,6 @@ async fn search_pages(
             document.id, name, document.relative_path, document.title
         );
     }
-    Ok(())
 }
 
 async fn list_links(

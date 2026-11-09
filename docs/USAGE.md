@@ -4,7 +4,7 @@
 
 ## 前提
 
-- Rust 1.85 以上
+- Rust 1.99 以上
 - macOS または Linux
 - ローカルに Markdown ディレクトリが存在すること
 
@@ -290,6 +290,7 @@ title: Architecture
 - frontmatter に `id` があればそれを使う
 - なければ内部で Snowflake ID を発行する
 - 内部 ID は `index rescan` で内容が変わっても維持される
+- frontmatter に `id` があれば、同一マウント内でファイルを移動しても ID を維持する。`id` がない場合、移動後は新しい ID になる
 - DB を削除して再構築した場合、frontmatter に `id` がないドキュメントの内部 ID は変わり得る
 - 同一マウント内で同じ ID が複数ドキュメントに使われている場合はエラーになり、そのマウントの index 更新は適用されない
 
@@ -303,6 +304,8 @@ mtime は保存しますが、変更判定には使いません。
 ```text
 $XDG_CONFIG_HOME/mindmount/   # 未設定時: ~/.config/mindmount/
 ├── config.toml               # マウント設定の正本
+├── id-state                  # Snowflake ID の発行状態
+├── mindmount.lock            # プロセス間の排他制御
 └── db/
     └── mindmount.sqlite      # 派生 index
 ```
@@ -323,6 +326,7 @@ created_at = "2026-11-09T11:20:04.405660Z"
 - `config.toml` がマウント設定の正本
 - SQLite は派生データ。削除しても `index rescan` で再構築できる
 - `node_id` は 0〜1023。通常は変更しない
+- `id-state` は ID の重複を防ぐため保持する。ロック中の別プロセスがある場合、コマンドはエラーで終了する
 - 手で設定を編集した場合も、次のコマンド実行時に SQLite のマウント一覧へ同期される
 
 ### DB をリセットする

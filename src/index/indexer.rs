@@ -300,6 +300,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn renaming_a_document_with_frontmatter_id_preserves_its_id() {
+        let mut fixture = fixture().await;
+        fs::write(fixture.notes.join("old.md"), "---\nid: 42\n---\n# Page\n").unwrap();
+        fixture.sync().await.unwrap();
+        fs::rename(fixture.notes.join("old.md"), fixture.notes.join("new.md")).unwrap();
+        fixture.sync().await.unwrap();
+        let documents = fixture.database.documents_for_mount(1).await.unwrap();
+        assert_eq!(documents.len(), 1);
+        assert_eq!(documents[0].id, 42);
+        assert_eq!(documents[0].relative_path, "new.md");
+    }
+
+    #[tokio::test]
     async fn uses_frontmatter_ids_and_titles() {
         let mut fixture = fixture().await;
         fs::write(

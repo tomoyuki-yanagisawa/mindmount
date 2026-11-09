@@ -318,6 +318,25 @@ fn without_arguments_prints_help() {
 }
 
 #[test]
+fn refuses_concurrent_operations_without_modifying_configuration() {
+    let env = TestEnv::new();
+    assert_success(&env.mount("Notes"));
+    let before = fs::read(env.config_path()).unwrap();
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(env.config_home.join("mindmount/mindmount.lock"))
+        .unwrap();
+    lock.try_lock().unwrap();
+    let output = env.run(&["storage", "list"]);
+    assert_failure(&output);
+    assert!(stderr(&output).contains("another Mindmount process may be running"));
+    assert_eq!(fs::read(env.config_path()).unwrap(), before);
+    drop(lock);
+    assert_success(&env.run(&["storage", "list"]));
+}
+
+#[test]
 fn unimplemented_commands_report_their_phase() {
     let env = TestEnv::new();
 

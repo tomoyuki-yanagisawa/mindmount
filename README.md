@@ -5,7 +5,7 @@ Mindmount は、自分のメモリを AI と共有するためのローカルサ
 
 Mindmount はローカルファーストの OSS プロジェクトです。
 
-Phase 1（CLI / Storage）と Phase 2（検索・参照・監視）は実装済みです。
+Phase 1（CLI / Storage）、Phase 2（検索・参照・監視）、Phase 3（MCP）は実装済みです。
 
 ## ドキュメント
 
@@ -23,7 +23,7 @@ Phase 1（CLI / Storage）と Phase 2（検索・参照・監視）は実装済�
 |---|---|---|
 | 1 | CLI / Storage / 基本 index | 実装済み |
 | 2 | ファイル監視、全文検索、参照、バックリンク | 実装済み |
-| 3 | MCP サーバー | 未着手 |
+| 3 | MCP サーバー | 実装済み |
 | 4 | Web ビューア（閲覧専用） | 未着手 |
 | 5 | リリース | 未着手 |
 
@@ -71,6 +71,9 @@ cargo run -- index rescan
 
 # マウント解除（Markdown ファイルは削除しない）
 cargo run -- storage unmount <mount-id>
+
+# MCP サーバー（stdio）
+cargo run -- mcp
 ```
 
 `mindmount -p ... -d ...` の引数だけの実行でも、マウント登録と index 構築ができます。
@@ -84,7 +87,7 @@ mindmount serve
 mindmount mcp
 ```
 
-`serve` は Phase 4、`mcp` は Phase 3 で実装予定です。
+`mcp` は実装済みです。`serve` は Phase 4 で実装予定です。
 
 ## ローカルデータ
 

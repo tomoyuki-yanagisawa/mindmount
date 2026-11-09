@@ -31,10 +31,10 @@ Mindmount は、自分のメモリを AI と共有するためのローカルサ
 - FTS5 trigram による全文検索
 - Markdown リンク・Wiki リンクの参照とバックリンク
 - `index watch` によるファイル監視
+- MCP stdio サーバー（Tools / Resources）
 
 未実装:
 
-- MCP
 - Web ビューア
 
 単一ユーザー・ローカル専用です。Web UI での編集は提供しません。
@@ -46,9 +46,11 @@ main.rs
   ├── cli/                CLI アダプタ
   │     ├── mod.rs        clap 定義、コマンド分岐、ロック
   │     └── output.rs     CLI 表示
+  ├── mcp/                MCP stdio アダプタ
   ├── usecase/            CLI / MCP / Web が共有する操作（出力なし）
   │     ├── mount.rs      マウント登録・一覧・解除
-  │     └── index.rs      index・検索・参照
+  │     ├── index.rs      index・検索・参照
+  │     └── document.rs   ページの読み書き
   ├── config/             設定・パス
   │     ├── mod.rs        config.toml、マウント検証
   │     └── paths.rs      XDG パス、ディレクトリ、ロック
@@ -60,8 +62,7 @@ main.rs
   ├── index/              走査・index 更新・監視
   └── storage/            マウント配下の安全なファイルアクセス
 
-Phase 3 で mcp/、Phase 4 で web/ を cli/ と同じ階層に追加し、
-どちらも usecase/ を呼ぶ。
+Phase 4 では web/ を cli/ / mcp/ と同じ階層に追加し、usecase/ を呼ぶ。
 ```
 
 ### モジュールの責務
@@ -71,8 +72,10 @@ Phase 3 で mcp/、Phase 4 で web/ を cli/ と同じ階層に追加し、
 | `main.rs` | ログ初期化、CLI パース、`cli::run` の呼び出し |
 | `cli/mod.rs` | コマンド、引数、ヘルプの定義、分岐、ロック |
 | `cli/output.rs` | CLI 向けの表示 |
+| `mcp/mod.rs` | MCP stdio サーバー、Tools、Resources |
 | `usecase/mount.rs` | マウント登録・一覧・解除（出力なし） |
 | `usecase/index.rs` | 再 index・ページ・検索・参照（出力なし） |
+| `usecase/document.rs` | ページの読み書きと楽観的ロック（出力なし） |
 | `config/mod.rs` | `config.toml`、マウント検証、ノード ID |
 | `config/paths.rs` | XDG パス解決、データディレクトリ、ロック |
 | `core/document.rs` | frontmatter、タイトル、SHA-256、ドメイン型 `Document` |
@@ -86,7 +89,7 @@ Phase 3 で mcp/、Phase 4 で web/ を cli/ と同じ階層に追加し、
 | `index/indexer.rs` | 走査、差分計算、参照解決、全マウント同期 |
 | `index/watch.rs` | ファイル監視と再走査 |
 
-依存方向は `cli` → `usecase` → `index` / `config` / `db` / `storage` / `core` です。
+依存方向は `cli` / `mcp` → `usecase` → `index` / `config` / `db` / `storage` / `core` です。
 `db` は `core` のドメイン型だけを使い、Markdown 解析やリンク解決には依存しません。
 SQLite 固有の型は `db` の外へ漏らさず、呼び出し側は `Mount` や `Document` を扱います。
 `usecase` は出力を持たないため、Phase 3 の MCP と Phase 4 の Web から同じ処理を
@@ -383,20 +386,29 @@ Phase 4 以降は Web ビューアも起動する予定です。
 
 ### 10.2 MCP
 
-Phase 3 で Rust 公式 SDK `rmcp` の stdio transport を使います。
+Rust 公式 SDK `rmcp` の stdio transport を使います。
 
-予定している Tools:
+Tools:
 
 - `mounts`
+- `list`
 - `search`
 - `read`
 - `write`
-- `list`
 - `references`
 - `backlinks`
 
-`write` は既存ファイル更新時に `content_hash` による楽観的ロックを要求します。
-stdio MCP では stdout にログを出さず、ログは stderr に限定します。
+Resources:
+
+- `mindmount://<mount-id>/documents/<document-id>`
+
+`read` は `document_id` または `mount_id` + `path` を受け付けます。`write` も同じ指定方法で、
+既存ファイルの更新には `read` が返した `content_hash` を `expected_hash` として要求します。
+新規作成では `expected_hash` を省略し、既存ファイルを上書きしません。
+
+MCP サーバーは CLI や `index watch` と同じ `usecase` を使います。書き込み時だけアプリケーション
+ロックを取得して index を同期します。stdio MCP では stdout にログを出さず、ログは stderr に
+限定します。
 
 ### 10.3 共通コア
 
@@ -435,6 +447,8 @@ UI とプロトコルの層を分離し、どちらからも同じドメイン�
 - DB: migration、マウント同期、カスケード削除、upsert/delete、参照の保持
 - Indexer: 追加・更新・削除、内部 ID 維持、frontmatter ID、重複 ID、DB 再構築
 - Reference: Markdown / Wiki リンクの抽出、マウント内の解決
+- Document: ページの読み書き、`content_hash` による楽観的ロック、新規作成
+- MCP: initialize、tools/list、resources/list / read、read / write の stdio 結合テスト
 
 ### 12.2 統合テスト
 
@@ -478,7 +492,8 @@ cargo fmt --all -- --check
 - frontmatter は簡易 YAML パーサ
 - 日本語の部分文字列検索に trigram を使用する。1〜2 文字の検索は走査する
 - Wiki リンクの解決はマウント内に限定し、同名候補が複数ある場合は未解決とする
-- Web ビューアと MCP は未実装
+- Web ビューアは未実装
+- MCP は stdio transport のみ
 - ローカル Web UI は閲覧専用（編集機能なし）
 - 複数プロセス間の index 更新は完全には直列化していない
 - Snowflake のノード ID 衝突を跨端末で完全には防げない

@@ -64,7 +64,7 @@ mindmount -p <PATH> -d <PATH> [-n <NAME>] [--host <HOST>] [--port <PORT>]
 | `index references` | ページからのリンクを一覧表示する |
 | `index backlinks` | ページへのリンクを一覧表示する |
 | `serve` | 読み取り専用 Web ビューアを起動する（Phase 4、未実装） |
-| `mcp` | MCP stdio サーバーを起動する（Phase 3、未実装） |
+| `mcp` | MCP stdio サーバーを起動する |
 
 引数だけの `mindmount -p ... -d ...` は、`storage mount` と同じ登録・index 構築を行います。
 
@@ -272,17 +272,36 @@ mindmount -p ~/Project/app -d ./notes -n "Project notes"
 note: the read-only web viewer will listen on 127.0.0.1:3000 starting in Phase 4
 ```
 
-## serve と mcp
+## mcp
 
 ```bash
-mindmount serve
 mindmount mcp
 ```
 
-現時点ではどちらも未実装です。
+stdio の MCP サーバーを起動します。AI クライアントの MCP 設定で、コマンドを
+`mindmount`、引数を `mcp` に指定してください。
 
-- `serve` は Phase 4 で**読み取り専用の Web ビューア**として実装する。
-- `mcp` は Phase 3 で stdio MCP サーバーとして実装する。
+Tools:
+
+- `mounts` / `list` / `search`
+- `read` / `write`
+- `references` / `backlinks`
+
+`read` は `document_id` または `mount_id` + `path` を受け付けます。`write` も同じ指定方法で、
+既存ページの更新には `read` が返した `content_hash` を `expected_hash` として渡します。
+新規作成では `expected_hash` を省略します。
+
+Resources として `mindmount://<mount-id>/documents/<document-id>` も公開します。
+
+書き込み時は index が同期されます。stdio ではログを stdout に出さず stderr に限定します。
+
+## serve
+
+```bash
+mindmount serve
+```
+
+Phase 4 で**読み取り専用の Web ビューア**として実装予定です。
 
 ローカル版の Web UI では Markdown を編集しません。人間は vim などでファイルを
 直接編集し、`index rescan` で反映します。Web UI での編集は提供しません。

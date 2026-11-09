@@ -30,10 +30,10 @@ Mindmount は、自分のメモリを AI と共有するためのローカルサ
 - ページ一覧
 - FTS5 trigram による全文検索
 - Markdown リンク・Wiki リンクの参照とバックリンク
+- `index watch` によるファイル監視
 
 未実装:
 
-- ファイル監視
 - MCP
 - Web ビューア
 
@@ -321,7 +321,7 @@ MCP の `write` Tool（Phase 3）では、`content_hash` による楽観的ロ�
 
 ```text
 mindmount storage mount|list|unmount
-mindmount index rescan|pages|search|references|backlinks
+mindmount index rescan|watch|pages|search|references|backlinks
 mindmount serve
 mindmount mcp
 ```
@@ -443,7 +443,7 @@ cargo fmt --all -- --check
 
 ### 制約
 
-- ファイル監視がないため、外部編集は `index rescan` が必要
+- `index watch` を起動していない場合、外部編集は `index rescan` が必要
 - `index rescan` は毎回全ファイルを走査する（ローカル MVP では許容）
 - frontmatter は簡易 YAML パーサ
 - 日本語の部分文字列検索に trigram を使用する。1〜2 文字の検索は走査する

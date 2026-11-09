@@ -147,12 +147,66 @@ impl Database {
         self.list_documents(Some(mount_id)).await
     }
 
+    /// Searches literal text, using trigram lookup for queries of at least three characters.
+    pub async fn search_documents(
+        &self,
+        query: &str,
+        mount_id: Option<i64>,
+    ) -> Result<Vec<Document>> {
+        let sql = if query.chars().count() >= 3 {
+            "SELECT d.id, d.mount_id, d.relative_path, d.title, d.content_hash, d.modified_at, d.indexed_at
+             FROM document_search s JOIN documents d ON d.id = s.rowid
+             WHERE document_search MATCH ? AND (? IS NULL OR d.mount_id = ?)
+             ORDER BY d.mount_id, d.relative_path"
+        } else {
+            "SELECT d.id, d.mount_id, d.relative_path, d.title, d.content_hash, d.modified_at, d.indexed_at
+             FROM document_search s JOIN documents d ON d.id = s.rowid
+             WHERE (instr(lower(s.title), lower(?1)) > 0 OR instr(lower(s.body), lower(?1)) > 0)
+             AND (?2 IS NULL OR d.mount_id = ?3)
+             ORDER BY d.mount_id, d.relative_path"
+        };
+        let term = if query.chars().count() >= 3 {
+            format!("\"{}\"", query.replace('"', "\"\""))
+        } else {
+            query.to_owned()
+        };
+        let rows = sqlx::query(sql)
+            .bind(term)
+            .bind(mount_id)
+            .bind(mount_id)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter().map(map_document).collect()
+    }
+
+    pub async fn unindexed_search_count(&self, mount_id: Option<i64>) -> Result<i64> {
+        Ok(sqlx::query_scalar(
+            "SELECT COUNT(*) FROM documents d LEFT JOIN document_search s ON s.rowid = d.id
+             WHERE s.rowid IS NULL AND (? IS NULL OR d.mount_id = ?)",
+        )
+        .bind(mount_id)
+        .bind(mount_id)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
     /// Applies one mount's index changes in a single transaction.
     pub async fn apply_mount_sync(
         &self,
         mount_id: i64,
         upserts: &[Document],
         deletes: &[String],
+    ) -> Result<()> {
+        self.apply_mount_sync_with_content(mount_id, upserts, deletes, &HashMap::new())
+            .await
+    }
+
+    pub async fn apply_mount_sync_with_content(
+        &self,
+        mount_id: i64,
+        upserts: &[Document],
+        deletes: &[String],
+        content: &HashMap<i64, String>,
     ) -> Result<()> {
         if upserts.is_empty() && deletes.is_empty() {
             return Ok(());
@@ -241,6 +295,18 @@ impl Database {
             .bind(document.indexed_at.timestamp_millis())
             .execute(&mut *transaction)
             .await?;
+            if let Some(body) = content.get(&document.id) {
+                sqlx::query("DELETE FROM document_search WHERE rowid = ?")
+                    .bind(document.id)
+                    .execute(&mut *transaction)
+                    .await?;
+                sqlx::query("INSERT INTO document_search (rowid, title, body) VALUES (?, ?, ?)")
+                    .bind(document.id)
+                    .bind(&document.title)
+                    .bind(body)
+                    .execute(&mut *transaction)
+                    .await?;
+            }
         }
 
         transaction.commit().await?;
@@ -299,6 +365,55 @@ mod tests {
         assert!(names.contains(&"mounts".to_string()));
         assert!(names.contains(&"documents".to_string()));
         assert!(names.contains(&"references".to_string()));
+    }
+
+    #[tokio::test]
+    async fn search_migration_requires_rescan_of_existing_documents() {
+        let temp = tempdir().unwrap();
+        let path = temp.path().join("test.sqlite");
+        let database = Database::open(&path).await.unwrap();
+        let mount = mount(1, &temp.path().join("project/notes"));
+        database.sync_mounts(&[mount]).await.unwrap();
+        let now = Utc::now();
+        database
+            .apply_mount_sync(
+                1,
+                &[Document {
+                    id: 10,
+                    mount_id: 1,
+                    relative_path: "page.md".into(),
+                    title: "Page".into(),
+                    content_hash: "hash".into(),
+                    modified_at: now,
+                    indexed_at: now,
+                }],
+                &[],
+            )
+            .await
+            .unwrap();
+        sqlx::query("DROP TRIGGER document_search_delete")
+            .execute(&database.pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TRIGGER document_search_update_id")
+            .execute(&database.pool)
+            .await
+            .unwrap();
+        sqlx::query("DROP TABLE document_search")
+            .execute(&database.pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 3")
+            .execute(&database.pool)
+            .await
+            .unwrap();
+        database.pool.close().await;
+        let reopened = Database::open(&path).await.unwrap();
+        assert_eq!(reopened.unindexed_search_count(None).await.unwrap(), 1);
+        assert_eq!(
+            reopened.documents_for_mount(1).await.unwrap()[0].content_hash,
+            ""
+        );
     }
 
     #[tokio::test]

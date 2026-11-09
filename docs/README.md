@@ -17,7 +17,7 @@ Mindmount はローカルファーストの OSS プロジェクトです。自�
 
 - `USAGE.md` と `DESIGN.md` は、現在の実装に基づく挙動を説明します。
 - 仕様と実装がずれる場合は、まず `DECISIONS.md` と `DESIGN.md` の「現状の制約」を確認してください。
-- 現在は **Phase 1（CLI / Storage）** まで実装済みです。Phase 2 以降は `ROADMAP.md` を参照してください。
+- Phase 1 は実装済みで、Phase 2 を進めています。詳細は `ROADMAP.md` を参照してください。
 
 ## 現在の状態
 
@@ -28,10 +28,11 @@ Mindmount はローカルファーストの OSS プロジェクトです。自�
 - Markdown の走査、タイトル抽出、内容ハッシュ、差分反映
 - `index rescan` による再インデックス
 - `index pages` によるページ一覧
+- `index search` による全文検索
 
 未実装の主な機能:
 
 - ファイル監視による自動反映（Phase 2）
-- 全文検索・参照・バックリンク（Phase 2）
+- 参照・バックリンク（Phase 2）
 - MCP サーバー（Phase 3）
 - Web UI（Phase 4、**閲覧専用ビューア**）

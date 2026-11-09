@@ -70,6 +70,9 @@ pub async fn run(cli: Cli) -> Result<()> {
             IndexCommand::Pages(options) => {
                 list_pages(&config, &database, options.mount_id).await?
             }
+            IndexCommand::Search { query, mount_id } => {
+                search_pages(&config, &database, &query, mount_id).await?
+            }
         },
         Some(Command::Serve(options)) => bail!(
             "`serve` (read-only web viewer) is not implemented yet (Phase 4); requested {}:{}",
@@ -276,6 +279,44 @@ async fn list_pages(config: &Config, database: &Database, mount_id: Option<i64>)
         println!(
             "{}\t{}\t{}\t{}",
             document.id, mount_name, document.relative_path, document.title
+        );
+    }
+    Ok(())
+}
+
+async fn search_pages(
+    config: &Config,
+    database: &Database,
+    query: &str,
+    mount_id: Option<i64>,
+) -> Result<()> {
+    if query.is_empty() {
+        bail!("search query must not be empty");
+    }
+    if let Some(id) = mount_id {
+        if config.find_by_id(id).is_none() {
+            bail!("mount {} is not registered", id);
+        }
+    }
+    database.sync_mounts(&config.mounts).await?;
+    let missing = database.unindexed_search_count(mount_id).await?;
+    if missing > 0 {
+        bail!("{missing} pages are not searchable yet; run `mindmount index rescan`");
+    }
+    let results = database.search_documents(query, mount_id).await?;
+    if results.is_empty() {
+        println!("No matching pages.");
+        return Ok(());
+    }
+    println!("ID\tMOUNT\tPATH\tTITLE");
+    for document in results {
+        let name = config
+            .find_by_id(document.mount_id)
+            .map(|mount| mount.name.as_str())
+            .unwrap_or("(unknown)");
+        println!(
+            "{}\t{}\t{}\t{}",
+            document.id, name, document.relative_path, document.title
         );
     }
     Ok(())

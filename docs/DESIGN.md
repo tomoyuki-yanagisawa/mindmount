@@ -1,6 +1,6 @@
 # Mindmount 設計ドキュメント
 
-対象: Phase 1（CLI / Storage）実装時点の設計。
+対象: Phase 2（CLI / Storage / index）までの実装を反映した設計。
 
 設計上の決定は [DECISIONS.md](DECISIONS.md) を参照してください。
 
@@ -43,32 +43,54 @@ Mindmount は、自分のメモリを AI と共有するためのローカルサ
 
 ```text
 main.rs
-  ├── cli.rs        clap の定義
-  └── app.rs        コマンドのオーケストレーション
-        ├── config.rs        設定・マウント管理
-        ├── db/sqlite.rs     SQLite の永続化
-        ├── id.rs            Snowflake ID
-        ├── index/indexer.rs ファイル走査と index 更新
-        └── storage/filesystem.rs  マウント配下の安全なファイルアクセス
-              └── core/document.rs  Markdown メタデータ
+  ├── cli/                CLI アダプタ
+  │     ├── mod.rs        clap 定義、コマンド分岐、ロック
+  │     └── output.rs     CLI 表示
+  ├── usecase/            CLI / MCP / Web が共有する操作（出力なし）
+  │     ├── mount.rs      マウント登録・一覧・解除
+  │     └── index.rs      index・検索・参照
+  ├── config/             設定・パス
+  │     ├── mod.rs        config.toml、マウント検証
+  │     └── paths.rs      XDG パス、ディレクトリ、ロック
+  ├── core/               ドメイン型・識別子・解析
+  │     ├── document.rs   Markdown メタデータ
+  │     ├── id.rs         Snowflake ID
+  │     └── reference.rs  リンク抽出・解決
+  ├── db/                 SQLite 永続化（リポジトリ）
+  ├── index/              走査・index 更新・監視
+  └── storage/            マウント配下の安全なファイルアクセス
+
+Phase 3 で mcp/、Phase 4 で web/ を cli/ と同じ階層に追加し、
+どちらも usecase/ を呼ぶ。
 ```
 
 ### モジュールの責務
 
 | モジュール | 責務 |
 |---|---|
-| `main.rs` | ログ初期化、CLI パース、`app::run` の呼び出し |
-| `cli.rs` | コマンド、引数、ヘルプの定義 |
-| `app.rs` | コマンドの分岐、マウント登録、出力、エラー文脈の付与 |
-| `config.rs` | XDG パス解決、`config.toml`、マウント検証、ノード ID |
-| `id.rs` | Snowflake ID の発行 |
+| `main.rs` | ログ初期化、CLI パース、`cli::run` の呼び出し |
+| `cli/mod.rs` | コマンド、引数、ヘルプの定義、分岐、ロック |
+| `cli/output.rs` | CLI 向けの表示 |
+| `usecase/mount.rs` | マウント登録・一覧・解除（出力なし） |
+| `usecase/index.rs` | 再 index・ページ・検索・参照（出力なし） |
+| `config/mod.rs` | `config.toml`、マウント検証、ノード ID |
+| `config/paths.rs` | XDG パス解決、データディレクトリ、ロック |
 | `core/document.rs` | frontmatter、タイトル、SHA-256、ドメイン型 `Document` |
+| `core/id.rs` | Snowflake ID の発行と永続状態 |
+| `core/reference.rs` | リンク抽出・解決、`ResolvedReference` |
 | `storage/filesystem.rs` | `MountRoot`、パス検証、読み取り、atomic write、走査 |
-| `db/sqlite.rs` | migration、マウント同期、ドキュメントの upsert/delete/query |
-| `index/indexer.rs` | 走査結果と DB の差分計算、トランザクション適用 |
+| `db/mod.rs` | 接続、migration、`Database` と共通エラー |
+| `db/mounts.rs` | マウント登録の同期 |
+| `db/queries.rs` | ドキュメント、FTS5 検索、参照・バックリンクの読み取り |
+| `db/sync.rs` | 変更ファイルと影響範囲の index を 1 トランザクションで適用 |
+| `index/indexer.rs` | 走査、差分計算、参照解決、全マウント同期 |
+| `index/watch.rs` | ファイル監視と再走査 |
 
-依存方向は `app` が各機能を組み立て、`index` が `core` / `db` / `storage` / `id` を使う形です。
-SQLite 固有の型は `db/sqlite.rs` の外へ漏らさず、呼び出し側は `Mount` や `Document` を扱います。
+依存方向は `cli` → `usecase` → `index` / `config` / `db` / `storage` / `core` です。
+`db` は `core` のドメイン型だけを使い、Markdown 解析やリンク解決には依存しません。
+SQLite 固有の型は `db` の外へ漏らさず、呼び出し側は `Mount` や `Document` を扱います。
+`usecase` は出力を持たないため、Phase 3 の MCP と Phase 4 の Web から同じ処理を
+再利用できます。
 
 ## 4. データフロー
 
@@ -89,10 +111,10 @@ storage mount
 
 同じディレクトリが登録済みの場合は、新規登録せずに index の再同期だけを行います。
 
-### 4.2 index 再構築
+### 4.2 index 更新
 
 ```text
-index rescan
+index rescan / index watch / storage mount
   ├── config.toml を読み込む
   ├── DB の mounts を config に同期（削除されたマウントも反映）
   └── 各マウントについて
@@ -101,7 +123,8 @@ index rescan
         ├── 前回の content_hash と比較
         ├── 追加 / 更新 / 削除 / 変更なしを分類
         ├── ドキュメント ID の重複を検証
-        └── 1 マウント分を SQLite トランザクションで適用
+        ├── 変更・移動・削除でリンク解決が変わるページを判定
+        └── 変更ファイルと影響を受ける参照を 1 マウント分のトランザクションで更新
 ```
 
 - 追加: DB に存在しない相対パス
@@ -110,8 +133,13 @@ index rescan
 - 変更なし: `content_hash` が同じ
 - Markdown 解析の変更に伴う migration は、既存のハッシュを無効化して次回 rescan でタイトルを更新する
 
-読み取りに失敗したファイルは、既存の index を削除せずスキップします。
-一時的なファイル不在や権限エラーで index が消えないようにするためです。
+通常は、変更されたファイルと、その変更によってリンク解決が変わるページだけを更新します。
+取りこぼしが疑われる場合や、DB を作り直したい場合は `index rescan` で全体を再構築できます。
+
+読み取りに失敗したファイル（権限エラーなど）は、既存の index を削除せずスキップします。
+そのページへのリンク解決も維持し、他のページのバックリンクを失いません。
+ファイルが存在しない場合は削除として扱います。監視中の一時的な不在も、再走査で
+ファイルが戻れば次回の更新で復元されます。
 
 ### 4.3 ページ一覧
 
@@ -264,7 +292,7 @@ Snowflake ID 自体は変更しません。
 
 ### 7.3 frontmatter
 
-Phase 1 は簡易パーサです。トップレベルの `id` と `title` だけを読みます。
+現在は簡易パーサです。トップレベルの `id` と `title` だけを読みます。
 
 ```yaml
 ---
@@ -308,7 +336,7 @@ mtime は保存しますが、変更判定には使いません。これによ�
 
 ### 8.3 書き込み
 
-内部 API として次を実装済みです。Phase 1 の CLI には公開していません。
+内部 API として次を実装済みです。現在の CLI には公開していません。
 
 - `write_atomic`: 同一ディレクトリの一時ファイル + fsync + rename
 - `create_new`: 既存ファイルがある場合は失敗
@@ -372,12 +400,12 @@ stdio MCP では stdout にログを出さず、ログは stderr に限定しま
 
 ### 10.3 共通コア
 
-Web と MCP は、config / db / index / storage の同じコアを共有します。
+Web と MCP は、`usecase` を通じて config / db / index / storage の同じコアを共有します。
 UI とプロトコルの層を分離し、どちらからも同じドメインロジックを使えるようにします。
 
 - Web: 閲覧・検索・参照表示
 - MCP: 読み書き・検索・参照
-- 共通: マウント管理、index、ファイルアクセス、ID
+- 共通: `usecase`（マウント管理、index、検索、参照）、ファイルアクセス、ID
 
 ## 11. エラー処理とログ
 
@@ -404,8 +432,9 @@ UI とプロトコルの層を分離し、どちらからも同じドメイン�
 - Config: 設定の作成・読み書き、ノード ID の永続化、ネスト・重複・不正値の拒否
 - Document: frontmatter、タイトル優先順、コードフェンス、SHA-256
 - Filesystem: 走査、隠しファイル、symlink、パストラバーサル、atomic write、上書き拒否
-- DB: migration、マウント同期、カスケード削除、upsert/delete
+- DB: migration、マウント同期、カスケード削除、upsert/delete、参照の保持
 - Indexer: 追加・更新・削除、内部 ID 維持、frontmatter ID、重複 ID、DB 再構築
+- Reference: Markdown / Wiki リンクの抽出、マウント内の解決
 
 ### 12.2 統合テスト
 
@@ -445,6 +474,7 @@ cargo fmt --all -- --check
 
 - `index watch` を起動していない場合、外部編集は `index rescan` が必要
 - `index rescan` は毎回全ファイルを走査する（ローカル MVP では許容）
+- index は Markdown より遅れて更新され得る。監視と 30 秒ごとの再走査で最終的に整合する
 - frontmatter は簡易 YAML パーサ
 - 日本語の部分文字列検索に trigram を使用する。1〜2 文字の検索は走査する
 - Wiki リンクの解決はマウント内に限定し、同名候補が複数ある場合は未解決とする
@@ -462,5 +492,4 @@ cargo fmt --all -- --check
 - Wiki リンクの同名ページ・曖昧性の解決規則
 - frontmatter ID の移行と衝突解決
 - 設定を `XDG_CONFIG_HOME` から `XDG_DATA_HOME` へ移す時期
-- ファイル監視の debounce と atomic save の扱い
 - Web UI の閲覧体験（検索・参照表示）の改善

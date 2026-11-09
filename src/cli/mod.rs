@@ -41,7 +41,7 @@ pub enum Command {
     },
     /// Start the read-only web viewer (Phase 4).
     Serve(ServerOptions),
-    /// Start the MCP stdio server (Phase 3).
+    /// Start the MCP stdio server.
     Mcp,
 }
 
@@ -144,6 +144,9 @@ pub async fn run(cli: Cli) -> Result<()> {
 
     let paths = AppPaths::from_env()?;
     paths.ensure_dirs()?;
+    if matches!(cli.command, Some(Command::Mcp)) {
+        return crate::mcp::run(&paths).await;
+    }
     if matches!(
         cli.command,
         Some(Command::Index {
@@ -230,7 +233,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             options.host,
             options.port
         ),
-        Some(Command::Mcp) => bail!("`mcp` is not implemented yet (Phase 3)"),
+        Some(Command::Mcp) => unreachable!("mcp is handled before acquiring the lock"),
     }
 
     Ok(())

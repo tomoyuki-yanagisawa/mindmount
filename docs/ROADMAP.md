@@ -11,7 +11,7 @@ Web UI での編集は提供しません。
 |---|---|---|
 | 1 | CLI / Storage / 基本 index | 実装済み |
 | 2 | ファイル監視、全文検索、参照、バックリンク | 実装済み |
-| 3 | MCP サーバー | 未着手 |
+| 3 | MCP サーバー | 実装済み |
 | 4 | Web ビューア（閲覧専用） | 未着手 |
 | 5 | リリース | 未着手 |
 
@@ -111,8 +111,8 @@ AI が同じ Markdown を読み書きできるようにする。
 
 ### タスク
 
-- `rmcp` の stdio transport
-- Tools
+- `rmcp` の stdio transport（実装済み）
+- Tools（実装済み）
   - `mounts`
   - `search`
   - `read`
@@ -120,18 +120,20 @@ AI が同じ Markdown を読み書きできるようにする。
   - `list`
   - `references`
   - `backlinks`
-- Resources
+- Resources（実装済み）
   - `mindmount://<mount-id>/documents/<document-id>`
-- `write` の楽観的ロック
+- `write` の楽観的ロック（実装済み）
   - `content_hash` の一致を要求
   - 新規作成時の存在確認
-- パス指定での読み書き
-- OpenCode / Claude Code との結合テスト
-- stdout にログを出さない運用
+- パス指定での読み書き（実装済み）
+- stdio の JSON-RPC 結合テスト（実装済み）
+- stdout にログを出さない運用（実装済み）
 
 ### 完了条件
 
 AI が同じ Markdown を読み書きできること。
+stdio の initialize / tools / resources / read / write を結合テストで確認済み。
+OpenCode / Claude Code など実クライアントでの確認は利用環境で行う。
 
 ### 設計上の論点
 

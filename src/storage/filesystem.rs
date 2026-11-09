@@ -74,6 +74,21 @@ impl MountRoot {
         Ok(())
     }
 
+    /// Returns whether a regular file exists at `relative`.
+    ///
+    /// The path is validated the same way as a write, so symlinks and paths
+    /// escaping the mount root are rejected.
+    pub fn exists(&self, relative: &Path) -> Result<bool> {
+        let target = self.resolve_for_write(relative)?;
+        match fs::symlink_metadata(&target) {
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
+            Err(error) => {
+                Err(error).with_context(|| format!("cannot inspect {}", relative.display()))
+            }
+        }
+    }
+
     /// Creates a new file and refuses to overwrite an existing one.
     pub fn create_new(&self, relative: &Path, content: &str) -> Result<()> {
         let target = self.resolve_for_write(relative)?;

@@ -89,10 +89,6 @@ impl Snowflake {
         })
     }
 
-    pub fn node_id(&self) -> u16 {
-        self.node_id
-    }
-
     pub fn next_id(&mut self) -> Result<i64, IdError> {
         let mut timestamp = self.current_timestamp()?;
 

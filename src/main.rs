@@ -1,11 +1,11 @@
 use clap::Parser;
-use mindmount::{app, cli::Cli};
+use mindmount::cli::{self, Cli};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     init_tracing();
     let cli = Cli::parse();
-    app::run(cli).await
+    cli::run(cli).await
 }
 
 fn init_tracing() {

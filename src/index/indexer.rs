@@ -1,7 +1,8 @@
 //! Builds the derived document index for a mount.
 //!
 //! Markdown files are authoritative. This module scans them, reads their
-//! metadata, and applies the resulting changes to SQLite in one transaction.
+//! metadata and links, and applies the resulting changes to SQLite in one
+//! transaction. The database only stores what this module computes.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path};
@@ -10,9 +11,11 @@ use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use tracing::warn;
 
+use crate::config::{Config, Mount};
 use crate::core::document::{content_hash, parse_document, Document};
-use crate::db::sqlite::Database;
-use crate::id::Snowflake;
+use crate::core::id::Snowflake;
+use crate::core::reference::{self, ResolvedReference};
+use crate::db::Database;
 use crate::storage::filesystem::MountRoot;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -34,6 +37,54 @@ impl SyncReport {
     }
 }
 
+#[derive(Debug)]
+pub struct MountSync {
+    pub mount: Mount,
+    pub report: SyncReport,
+}
+
+#[derive(Debug)]
+pub struct SyncFailure {
+    pub mount: Mount,
+    pub message: String,
+}
+
+#[derive(Debug, Default)]
+pub struct SyncOutcome {
+    pub synced: Vec<MountSync>,
+    pub failures: Vec<SyncFailure>,
+}
+
+/// Scans every registered mount and updates the derived index.
+///
+/// A mount that fails is reported in the outcome and does not stop the rest.
+pub async fn sync_all(
+    config: &Config,
+    database: &Database,
+    ids: &mut Snowflake,
+) -> Result<SyncOutcome> {
+    database.sync_mounts(&config.mounts).await?;
+
+    let mut outcome = SyncOutcome::default();
+    for mount in &config.mounts {
+        let result = match MountRoot::new(&mount.directory_path) {
+            Ok(root) => sync_mount(database, mount.id, &root, ids).await,
+            Err(error) => Err(error),
+        };
+        match result {
+            Ok(report) => outcome.synced.push(MountSync {
+                mount: mount.clone(),
+                report,
+            }),
+            Err(error) => outcome.failures.push(SyncFailure {
+                mount: mount.clone(),
+                message: format!("{error:#}"),
+            }),
+        }
+    }
+    Ok(outcome)
+}
+
 pub async fn sync_mount(
     database: &Database,
     mount_id: i64,
@@ -46,6 +97,7 @@ pub async fn sync_mount(
         .into_iter()
         .map(|document| (document.relative_path.clone(), document))
         .collect();
+    let previous_documents: Vec<Document> = existing.values().cloned().collect();
 
     let files = root.scan_markdown()?;
     let mut report = SyncReport {
@@ -53,9 +105,9 @@ pub async fn sync_mount(
         ..SyncReport::default()
     };
     let mut scanned_paths = HashSet::new();
+    let mut documents = Vec::with_capacity(files.len());
+    let mut bodies = HashMap::new();
     let mut upserts = Vec::new();
-    let mut search_content = HashMap::new();
-    let mut unchanged = Vec::new();
 
     for relative in &files {
         let Some(relative_path) = relative_path_string(relative) else {
@@ -70,15 +122,20 @@ pub async fn sync_mount(
             Err(error) => {
                 warn!(path = %relative_path, error = %error, "skipping an unreadable file");
                 report.errors += 1;
+                // Keep its metadata so other pages still resolve links to it.
+                if let Some(existing_document) = existing.get(&relative_path) {
+                    documents.push(existing_document.clone());
+                }
                 continue;
             }
         };
 
         let hash = content_hash(&content);
-        if let Some(previous) = existing.get(&relative_path) {
-            if previous.content_hash == hash {
+        if let Some(existing_document) = existing.get(&relative_path) {
+            if existing_document.content_hash == hash {
                 report.unchanged += 1;
-                unchanged.push(previous.clone());
+                bodies.insert(existing_document.id, content);
+                documents.push(existing_document.clone());
                 continue;
             }
         }
@@ -88,7 +145,7 @@ pub async fn sync_mount(
         let id = match parsed.frontmatter.id {
             Some(id) => id,
             None => match existing.get(&relative_path) {
-                Some(previous) => previous.id,
+                Some(existing_document) => existing_document.id,
                 None => ids.next_id().context("cannot generate a document id")?,
             },
         };
@@ -104,7 +161,7 @@ pub async fn sync_mount(
             report.added += 1;
         }
 
-        upserts.push(Document {
+        let document = Document {
             id,
             mount_id,
             relative_path,
@@ -112,8 +169,10 @@ pub async fn sync_mount(
             content_hash: hash,
             modified_at,
             indexed_at: Utc::now(),
-        });
-        search_content.insert(id, content);
+        };
+        bodies.insert(id, content);
+        documents.push(document.clone());
+        upserts.push(document);
     }
 
     let deletes: Vec<String> = existing
@@ -126,7 +185,7 @@ pub async fn sync_mount(
     // Catch duplicate frontmatter IDs before touching the database so the
     // whole mount stays consistent.
     let mut owners: HashMap<i64, String> = HashMap::new();
-    for document in unchanged.iter().chain(upserts.iter()) {
+    for document in &documents {
         if let Some(other_path) = owners.insert(document.id, document.relative_path.clone()) {
             bail!(
                 "document id {} is used by both {} and {}",
@@ -137,11 +196,83 @@ pub async fn sync_mount(
         }
     }
 
+    // Nothing changed, so the stored references are already current.
+    let (references, affected) = if upserts.is_empty() && deletes.is_empty() {
+        (Vec::new(), Vec::new())
+    } else {
+        let changed: HashSet<i64> = upserts.iter().map(|document| document.id).collect();
+        resolved_changes(&documents, &previous_documents, &bodies, &changed)
+    };
     database
-        .apply_mount_sync_with_content(mount_id, &upserts, &deletes, &search_content)
+        .apply_mount_sync(
+            mount_id,
+            &upserts,
+            &deletes,
+            &bodies,
+            &references,
+            &affected,
+        )
         .await?;
 
     Ok(report)
+}
+
+/// Resolves the current links and returns the rows to persist.
+///
+/// A page is rewritten when its own content changed, when a link target was
+/// replaced or removed, or when the new document set changes how its links
+/// resolve. Pages whose links still resolve the same way are left untouched,
+/// so a normal edit only touches the file itself and its backlinks.
+fn resolved_changes(
+    documents: &[Document],
+    previous: &[Document],
+    bodies: &HashMap<i64, String>,
+    changed: &HashSet<i64>,
+) -> (Vec<ResolvedReference>, Vec<i64>) {
+    let mut references = Vec::new();
+    let mut affected = Vec::new();
+
+    for document in documents {
+        let Some(body) = bodies.get(&document.id) else {
+            continue;
+        };
+        let extracted = reference::extract(body);
+        let new_targets: Vec<Option<i64>> = extracted
+            .iter()
+            .map(|reference| reference::resolve(reference, document, documents))
+            .collect();
+
+        let is_affected = if changed.contains(&document.id) {
+            true
+        } else {
+            let old_targets: Vec<Option<i64>> = extracted
+                .iter()
+                .map(|reference| reference::resolve(reference, document, previous))
+                .collect();
+            old_targets != new_targets
+                || new_targets.iter().flatten().any(|id| changed.contains(id))
+        };
+        if !is_affected {
+            continue;
+        }
+
+        affected.push(document.id);
+        references.extend(
+            extracted
+                .into_iter()
+                .zip(new_targets)
+                .map(|(reference, target_id)| ResolvedReference {
+                    source_id: document.id,
+                    target_id,
+                    target: reference.target,
+                    anchor: reference.anchor,
+                    raw: reference.raw,
+                    kind: reference.kind,
+                }),
+        );
+    }
+
+    (references, affected)
 }
 
 fn relative_path_string(relative: &Path) -> Option<String> {
@@ -178,7 +309,6 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::config::Mount;
 
     struct Fixture {
         _temp: tempfile::TempDir,
@@ -283,9 +413,10 @@ mod tests {
         let id = document.id;
         document.title = "**Title**".into();
         document.content_hash.clear(); // The title migration marks old rows for refresh.
+        let bodies = HashMap::from([(id, "# **Title**\n".to_string())]);
         fixture
             .database
-            .apply_mount_sync(1, &[document], &[])
+            .apply_mount_sync(1, &[document], &[], &bodies, &[], &[id])
             .await
             .unwrap();
 
@@ -416,5 +547,62 @@ mod tests {
         let report = sync_mount(&second, 1, &root, &mut ids).await.unwrap();
         assert_eq!(report.added, 1);
         assert_eq!(second.documents_for_mount(1).await.unwrap().len(), 1);
+    }
+
+    fn document(id: i64, path: &str, title: &str) -> Document {
+        Document {
+            id,
+            mount_id: 1,
+            relative_path: path.into(),
+            title: title.into(),
+            content_hash: String::new(),
+            modified_at: Utc::now(),
+            indexed_at: Utc::now(),
+        }
+    }
+
+    #[test]
+    fn editing_a_target_updates_its_backlinks_only() {
+        let documents = vec![
+            document(10, "source.md", "Source"),
+            document(20, "target.md", "Target"),
+            document(30, "other.md", "Other"),
+        ];
+        let bodies = HashMap::from([
+            (10, "[Target](target.md)\n".to_string()),
+            (20, "# Target\n\nedited\n".to_string()),
+            (30, "no links\n".to_string()),
+        ]);
+        let changed = HashSet::from([20]);
+
+        let (references, affected) = resolved_changes(&documents, &documents, &bodies, &changed);
+
+        assert_eq!(affected, vec![10, 20]);
+        assert!(references
+            .iter()
+            .any(|reference| reference.source_id == 10 && reference.target_id == Some(20)));
+    }
+
+    #[test]
+    fn adding_a_page_re_resolves_existing_links() {
+        let source = document(10, "source.md", "Source");
+        let first = document(20, "first.md", "Shared");
+        let second = document(21, "second.md", "Shared");
+        let previous = vec![source.clone(), first.clone()];
+        let documents = vec![source, first, second];
+        let bodies = HashMap::from([
+            (10, "[[Shared]]\n".to_string()),
+            (20, String::new()),
+            (21, String::new()),
+        ]);
+        let changed = HashSet::from([21]);
+
+        let (references, affected) = resolved_changes(&documents, &previous, &bodies, &changed);
+
+        assert!(affected.contains(&10));
+        assert!(affected.contains(&21));
+        assert!(references
+            .iter()
+            .any(|reference| reference.source_id == 10 && reference.target_id.is_none()));
     }
 }

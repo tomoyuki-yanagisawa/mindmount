@@ -29,11 +29,11 @@ Mindmount は、自分のメモリを AI と共有するためのローカルサ
 - index の差分更新と再構築
 - ページ一覧
 - FTS5 trigram による全文検索
+- Markdown リンク・Wiki リンクの参照とバックリンク
 
 未実装:
 
 - ファイル監視
-- 参照・バックリンク
 - MCP
 - Web ビューア
 
@@ -168,7 +168,7 @@ CREATE TABLE documents (
 );
 ```
 
-- `references` テーブルは Phase 2 用に作成済みだが、まだ使用していない。
+- `references` テーブルに抽出したリンクと解決先を保存する。
 - 日時は SQLite に native な timestamp 型がないため、Unix ミリ秒の `INTEGER` で保存する。
 - `mounts.directory_path` は canonical path を保存する。
 - `documents.relative_path` はマウント先からの `/` 区切り相対パス。
@@ -321,7 +321,7 @@ MCP の `write` Tool（Phase 3）では、`content_hash` による楽観的ロ�
 
 ```text
 mindmount storage mount|list|unmount
-mindmount index rescan|pages|search
+mindmount index rescan|pages|search|references|backlinks
 mindmount serve
 mindmount mcp
 ```
@@ -447,7 +447,7 @@ cargo fmt --all -- --check
 - `index rescan` は毎回全ファイルを走査する（ローカル MVP では許容）
 - frontmatter は簡易 YAML パーサ
 - 日本語の部分文字列検索に trigram を使用する。1〜2 文字の検索は走査する
-- 参照・バックリンクは未実装
+- Wiki リンクの解決はマウント内に限定し、同名候補が複数ある場合は未解決とする
 - Web ビューアと MCP は未実装
 - ローカル Web UI は閲覧専用（編集機能なし）
 - 複数プロセス間の index 更新は完全には直列化していない

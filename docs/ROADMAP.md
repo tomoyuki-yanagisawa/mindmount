@@ -85,18 +85,11 @@ Web UI での編集は提供しません。
 - ファイル名変更・Git checkout への追従
 - FTS5 trigram による全文検索（実装済み）
   - 1〜2 文字の検索は走査で対応
-- Markdown リンクの抽出
-- Wiki リンクの抽出
-- 外部 URL の記録
-- リンク解決
-  - 同一マウント内を優先
-  - 明示的な相対パスを優先
-  - Wiki リンクはページ名・パスから候補検索
-  - 同名ページは曖昧として扱う
-  - 未解決リンクも記録
-- バックリンク
-- `references` テーブルの利用
-- 必要に応じて `index search`、`index references`、`index backlinks` を追加
+- Markdown リンク・Wiki リンクの抽出と外部 URL の記録（実装済み）
+- マウント内のリンク解決、曖昧・未解決リンクの記録（実装済み）
+- `references` テーブルとバックリンク（実装済み）
+- `index search`、`index references`、`index backlinks`（実装済み）
+- パーセントエンコードされたリンク先の解決
 
 ### 完了条件
 

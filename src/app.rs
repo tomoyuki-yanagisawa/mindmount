@@ -73,6 +73,12 @@ pub async fn run(cli: Cli) -> Result<()> {
             IndexCommand::Search { query, mount_id } => {
                 search_pages(&config, &database, &query, mount_id).await?
             }
+            IndexCommand::References { document_id } => {
+                list_links(&config, &database, document_id, false).await?
+            }
+            IndexCommand::Backlinks { document_id } => {
+                list_links(&config, &database, document_id, true).await?
+            }
         },
         Some(Command::Serve(options)) => bail!(
             "`serve` (read-only web viewer) is not implemented yet (Phase 4); requested {}:{}",
@@ -317,6 +323,43 @@ async fn search_pages(
         println!(
             "{}\t{}\t{}\t{}",
             document.id, name, document.relative_path, document.title
+        );
+    }
+    Ok(())
+}
+
+async fn list_links(
+    config: &Config,
+    database: &Database,
+    document_id: i64,
+    backlinks: bool,
+) -> Result<()> {
+    database.sync_mounts(&config.mounts).await?;
+    if !database.document_exists(document_id).await? {
+        bail!("page {} is not indexed", document_id);
+    }
+    let missing = database.unindexed_search_count(None).await?;
+    if missing > 0 {
+        bail!("{missing} pages need indexing; run `mindmount index rescan`");
+    }
+    let links = database.links(document_id, backlinks).await?;
+    if links.is_empty() {
+        println!("No links found.");
+        return Ok(());
+    }
+    println!("SOURCE_ID\tSOURCE_PATH\tTARGET_ID\tTARGET\tKIND");
+    for link in links {
+        let target = match link.anchor {
+            Some(anchor) => format!("{}#{anchor}", link.target),
+            None => link.target,
+        };
+        let id = link
+            .target_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "-".into());
+        println!(
+            "{}\t{}\t{}\t{}\t{}",
+            link.source_id, link.source_path, id, target, link.kind
         );
     }
     Ok(())

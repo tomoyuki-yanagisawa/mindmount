@@ -126,6 +126,53 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 }
 
 #[test]
+fn references_and_backlinks_follow_rescans() {
+    let env = TestEnv::new();
+    fs::write(env.notes.join("source.md"), "---\nid: 100\n---\n[Target](./target.md#heading) [[target]] [Web](https://example.com) [[Missing]]\n").unwrap();
+    fs::write(env.notes.join("target.md"), "---\nid: 200\n---\n# Target\n").unwrap();
+    assert_success(&env.mount("Notes"));
+    let links = env.run(&["index", "references", "100"]);
+    assert_success(&links);
+    let links = stdout(&links);
+    assert!(
+        links.contains("200\t./target.md#heading\tmarkdown"),
+        "{links}"
+    );
+    assert!(links.contains("200\ttarget\twiki"), "{links}");
+    assert!(
+        links.contains("-\thttps://example.com\tmarkdown"),
+        "{links}"
+    );
+    assert!(links.contains("-\tMissing\twiki"), "{links}");
+    let backlinks = env.run(&["index", "backlinks", "200"]);
+    assert_success(&backlinks);
+    assert!(stdout(&backlinks).contains("100\tsource.md"));
+
+    fs::remove_file(env.notes.join("target.md")).unwrap();
+    assert_success(&env.run(&["index", "rescan"]));
+    let links = stdout(&env.run(&["index", "references", "100"]));
+    assert!(links.contains("-\t./target.md#heading"), "{links}");
+    assert_failure(&env.run(&["index", "backlinks", "200"]));
+}
+
+#[test]
+fn wiki_links_remain_unresolved_when_ambiguous_then_resolve() {
+    let env = TestEnv::new();
+    fs::write(
+        env.notes.join("source.md"),
+        "---\nid: 100\n---\n[[Shared]]\n",
+    )
+    .unwrap();
+    fs::write(env.notes.join("a.md"), "---\nid: 201\ntitle: Shared\n---\n").unwrap();
+    fs::write(env.notes.join("b.md"), "---\nid: 202\ntitle: Shared\n---\n").unwrap();
+    assert_success(&env.mount("Notes"));
+    assert!(stdout(&env.run(&["index", "references", "100"])).contains("-\tShared\twiki"));
+    fs::remove_file(env.notes.join("b.md")).unwrap();
+    assert_success(&env.run(&["index", "rescan"]));
+    assert!(stdout(&env.run(&["index", "references", "100"])).contains("201\tShared\twiki"));
+}
+
+#[test]
 fn searches_japanese_and_tracks_index_changes() {
     let env = TestEnv::new();
     fs::write(

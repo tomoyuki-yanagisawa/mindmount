@@ -12,6 +12,7 @@ use sqlx::Row;
 
 use crate::config::Mount;
 use crate::core::document::Document;
+use crate::index::references;
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
@@ -29,6 +30,16 @@ pub type Result<T> = std::result::Result<T, DbError>;
 
 pub struct Database {
     pool: SqlitePool,
+}
+
+#[derive(Debug)]
+pub struct LinkRow {
+    pub source_id: i64,
+    pub source_path: String,
+    pub target_id: Option<i64>,
+    pub target: String,
+    pub anchor: Option<String>,
+    pub kind: String,
 }
 
 impl Database {
@@ -182,12 +193,47 @@ impl Database {
     pub async fn unindexed_search_count(&self, mount_id: Option<i64>) -> Result<i64> {
         Ok(sqlx::query_scalar(
             "SELECT COUNT(*) FROM documents d LEFT JOIN document_search s ON s.rowid = d.id
-             WHERE s.rowid IS NULL AND (? IS NULL OR d.mount_id = ?)",
+             WHERE (s.rowid IS NULL OR d.content_hash = '') AND (? IS NULL OR d.mount_id = ?)",
         )
         .bind(mount_id)
         .bind(mount_id)
         .fetch_one(&self.pool)
         .await?)
+    }
+
+    pub async fn links(&self, document_id: i64, backlinks: bool) -> Result<Vec<LinkRow>> {
+        let column = if backlinks {
+            "r.target_document_id"
+        } else {
+            "r.source_document_id"
+        };
+        let sql = format!("SELECT r.source_document_id, d.relative_path, r.target_document_id, r.target_uri, r.target_anchor, r.source_kind FROM \"references\" r JOIN documents d ON d.id = r.source_document_id WHERE {column} = ? ORDER BY d.relative_path, r.id");
+        let rows = sqlx::query(&sql)
+            .bind(document_id)
+            .fetch_all(&self.pool)
+            .await?;
+        rows.iter()
+            .map(|row| {
+                Ok(LinkRow {
+                    source_id: row.try_get("source_document_id")?,
+                    source_path: row.try_get("relative_path")?,
+                    target_id: row.try_get("target_document_id")?,
+                    target: row.try_get("target_uri")?,
+                    anchor: row.try_get("target_anchor")?,
+                    kind: row.try_get("source_kind")?,
+                })
+            })
+            .collect()
+    }
+
+    pub async fn document_exists(&self, id: i64) -> Result<bool> {
+        Ok(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM documents WHERE id = ?")
+                .bind(id)
+                .fetch_one(&self.pool)
+                .await?
+                > 0,
+        )
     }
 
     /// Applies one mount's index changes in a single transaction.
@@ -306,6 +352,24 @@ impl Database {
                     .bind(body)
                     .execute(&mut *transaction)
                     .await?;
+            }
+        }
+
+        let rows = sqlx::query("SELECT d.id, d.mount_id, d.relative_path, d.title, d.content_hash, d.modified_at, d.indexed_at, s.body FROM documents d LEFT JOIN document_search s ON d.id = s.rowid WHERE d.mount_id = ?")
+            .bind(mount_id).fetch_all(&mut *transaction).await?;
+        let documents: Vec<Document> = rows.iter().map(map_document).collect::<Result<_>>()?;
+        for (row, document) in rows.iter().zip(&documents) {
+            let body: Option<String> = row.try_get("body")?;
+            let Some(body) = body else { continue };
+            sqlx::query("DELETE FROM \"references\" WHERE source_document_id = ?")
+                .bind(document.id)
+                .execute(&mut *transaction)
+                .await?;
+            for reference in references::extract(&body) {
+                let target_id = references::resolve(&reference, document, &documents);
+                sqlx::query("INSERT INTO \"references\" (source_document_id, target_document_id, target_uri, target_anchor, raw_reference, relation_type, source_kind) VALUES (?, ?, ?, ?, ?, 'link', ?)")
+                    .bind(document.id).bind(target_id).bind(&reference.target).bind(&reference.anchor)
+                    .bind(&reference.raw).bind(reference.kind).execute(&mut *transaction).await?;
             }
         }
 

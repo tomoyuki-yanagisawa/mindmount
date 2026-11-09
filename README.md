@@ -22,7 +22,7 @@ Phase 1（CLI / Storage）は実装済みで、Phase 2 を進めています。
 | Phase | 内容 | 状態 |
 |---|---|---|
 | 1 | CLI / Storage / 基本 index | 実装済み |
-| 2 | ファイル監視、全文検索、参照、バックリンク | 進行中（全文検索を実装） |
+| 2 | ファイル監視、全文検索、参照、バックリンク | 進行中（検索・参照を実装） |
 | 3 | MCP サーバー | 未着手 |
 | 4 | Web ビューア（閲覧専用） | 未着手 |
 | 5 | リリース | 未着手 |
@@ -79,7 +79,7 @@ CLI は責務ごとにグループ化されています。
 
 ```text
 mindmount storage mount|list|unmount
-mindmount index rescan|pages|search
+mindmount index rescan|pages|search|references|backlinks
 mindmount serve
 mindmount mcp
 ```

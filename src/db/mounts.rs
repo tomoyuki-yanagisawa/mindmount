@@ -74,17 +74,28 @@ impl Database {
         .bind(directory)
         .fetch_optional(&self.pool)
         .await?;
-        let Some(row) = row else {
-            return Ok(None);
-        };
-        let created_at: i64 = row.try_get("created_at")?;
-        Ok(Some(Mount {
-            id: row.try_get("id")?,
-            name: row.try_get("name")?,
-            project_path: PathBuf::from(row.try_get::<String, _>("project_path")?),
-            directory_path: PathBuf::from(row.try_get::<String, _>("directory_path")?),
-            created_at: DateTime::from_timestamp_millis(created_at)
-                .ok_or(DbError::InvalidTimestamp(created_at))?,
-        }))
+        row.as_ref().map(map_mount).transpose()
     }
+
+    pub async fn inactive_mounts(&self) -> Result<Vec<Mount>> {
+        let rows = sqlx::query(
+            "SELECT id, name, project_path, directory_path, created_at
+             FROM mounts WHERE is_active = 0 ORDER BY name",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(map_mount).collect()
+    }
+}
+
+fn map_mount(row: &sqlx::sqlite::SqliteRow) -> Result<Mount> {
+    let created_at: i64 = row.try_get("created_at")?;
+    Ok(Mount {
+        id: row.try_get("id")?,
+        name: row.try_get("name")?,
+        project_path: PathBuf::from(row.try_get::<String, _>("project_path")?),
+        directory_path: PathBuf::from(row.try_get::<String, _>("directory_path")?),
+        created_at: DateTime::from_timestamp_millis(created_at)
+            .ok_or(DbError::InvalidTimestamp(created_at))?,
+    })
 }

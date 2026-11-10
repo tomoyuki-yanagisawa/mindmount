@@ -263,6 +263,7 @@ fn resolved_changes(
                     raw: reference.raw,
                     kind: reference.kind,
                     line: reference.line,
+                    heading: reference.heading,
                 }),
         );
     }

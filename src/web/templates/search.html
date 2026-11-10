@@ -3,12 +3,14 @@
 <h1>検索</h1>
 <form class="search-page" action="/search" method="get">
   <input type="search" name="q" value="{{ query }}" placeholder="検索" aria-label="検索">
+  <input type="search" name="file" value="{{ file }}" placeholder="ファイル名" aria-label="ファイル名">
   <select name="mount" aria-label="マウント">
     <option value="">すべてのマウント</option>
     {% for mount in mounts %}
     <option value="{{ mount.id }}" {% if mount.selected %}selected{% endif %}>{{ mount.name }}</option>
     {% endfor %}
   </select>
+  <label class="inline"><input type="checkbox" name="regex" value="1" {% if regex %}checked{% endif %}> 正規表現</label>
   <button type="submit">検索</button>
 </form>
 

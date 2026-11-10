@@ -13,6 +13,7 @@ pub struct Reference {
     pub raw: String,
     pub kind: &'static str,
     pub line: usize,
+    pub heading: Option<String>,
 }
 
 /// A reference resolved against a mount's documents, ready to persist.
@@ -25,6 +26,7 @@ pub struct ResolvedReference {
     pub raw: String,
     pub kind: &'static str,
     pub line: usize,
+    pub heading: Option<String>,
 }
 
 pub fn extract(content: &str) -> Vec<Reference> {
@@ -34,11 +36,27 @@ pub fn extract(content: &str) -> Vec<Reference> {
     let mut text_end = 0;
     let mut link_depth = 0;
     let mut code_block = false;
+    let mut in_heading = false;
+    let mut heading_text = String::new();
+    let mut heading: Option<String> = None;
     for (event, range) in Parser::new(body).into_offset_iter() {
+        match &event {
+            Event::Start(Tag::Heading { .. }) => {
+                in_heading = true;
+                heading_text.clear();
+            }
+            Event::End(pulldown_cmark::TagEnd::Heading(_)) => {
+                in_heading = false;
+                heading =
+                    (!heading_text.trim().is_empty()).then(|| heading_text.trim().to_string());
+            }
+            Event::Text(text) | Event::Code(text) if in_heading => heading_text.push_str(text),
+            _ => {}
+        }
         let text = matches!(event, Event::Text(_)) && link_depth == 0 && !code_block;
         if !text || text_start.is_some() && range.start != text_end {
             if let Some(start) = text_start.take() {
-                extract_wiki(&body[start..text_end], start, body, &mut result);
+                extract_wiki(&body[start..text_end], start, body, &heading, &mut result);
             }
         }
         match event {
@@ -54,6 +72,7 @@ pub fn extract(content: &str) -> Vec<Reference> {
                     raw: body[range].to_owned(),
                     kind: "markdown",
                     line,
+                    heading: heading.clone(),
                 });
             }
             Event::End(pulldown_cmark::TagEnd::Link) => link_depth -= 1,
@@ -65,12 +84,18 @@ pub fn extract(content: &str) -> Vec<Reference> {
         }
     }
     if let Some(start) = text_start {
-        extract_wiki(&body[start..text_end], start, body, &mut result);
+        extract_wiki(&body[start..text_end], start, body, &heading, &mut result);
     }
     result
 }
 
-fn extract_wiki(text: &str, base: usize, body: &str, result: &mut Vec<Reference>) {
+fn extract_wiki(
+    text: &str,
+    base: usize,
+    body: &str,
+    heading: &Option<String>,
+    result: &mut Vec<Reference>,
+) {
     let mut rest = text;
     while let Some(start) = rest.find("[[") {
         let Some(end) = rest[start + 2..].find("]]") else {
@@ -86,6 +111,7 @@ fn extract_wiki(text: &str, base: usize, body: &str, result: &mut Vec<Reference>
                 raw: raw.to_owned(),
                 kind: "wiki",
                 line: line_number(body, base + start),
+                heading: heading.clone(),
             });
         }
         rest = &rest[start + end + 4..];
@@ -169,6 +195,13 @@ fn normalized(path: PathBuf) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn records_the_current_heading() {
+        let refs = extract("# Section\n\n[[Note]]\n\n## Sub\n\n[Page](page.md)\n");
+        assert_eq!(refs[0].heading.as_deref(), Some("Section"));
+        assert_eq!(refs[1].heading.as_deref(), Some("Sub"));
+    }
 
     #[test]
     fn extracts_links_but_not_code_or_frontmatter() {

@@ -121,8 +121,11 @@ pub enum LinkCommand {
 pub enum MountCommand {
     /// Register a directory and build its derived index.
     Add(MountOptions),
-    /// List registered mounts.
-    List,
+    /// List registered mounts, optionally including inactive ones.
+    List {
+        #[arg(long)]
+        all: bool,
+    },
     /// Remove a mount from the registry. Markdown files are never deleted.
     Remove {
         /// Internal mount id shown by `mindmount mount list`.
@@ -146,11 +149,17 @@ pub enum IndexCommand {
     Pages(PagesOptions),
     /// Search indexed Markdown by literal text.
     Search {
-        /// Text to search for.
+        /// Text or regular expression to search for.
         query: String,
         /// Only search within this mount.
         #[arg(short = 'm', long = "mount")]
         mount_id: Option<i64>,
+        /// Only search files whose relative path contains this text.
+        #[arg(long)]
+        file: Option<String>,
+        /// Treat the query as a regular expression.
+        #[arg(long)]
+        regex: bool,
     },
     /// List links from a page.
     References { document_id: i64 },
@@ -290,8 +299,8 @@ pub async fn run(cli: Cli) -> Result<()> {
                 .await?;
                 output::mount_result(&result);
             }
-            MountCommand::List => {
-                let rows = mount::list(&config, &database).await?;
+            MountCommand::List { all } => {
+                let rows = mount::list(&config, &database, all).await?;
                 output::mounts(&rows);
             }
             MountCommand::Remove { mount_id } => {
@@ -321,8 +330,15 @@ pub async fn run(cli: Cli) -> Result<()> {
                 let documents = index_ops::pages(&config, &database, options.mount_id).await?;
                 output::page_list(&config, &documents, "No pages indexed.");
             }
-            IndexCommand::Search { query, mount_id } => {
-                let hits = index_ops::search(&config, &database, &query, mount_id).await?;
+            IndexCommand::Search {
+                query,
+                mount_id,
+                file,
+                regex,
+            } => {
+                let hits =
+                    index_ops::search(&config, &database, &query, mount_id, file.as_deref(), regex)
+                        .await?;
                 output::search_hits(&hits);
             }
             IndexCommand::References { document_id } => {

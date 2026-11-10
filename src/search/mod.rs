@@ -15,6 +15,8 @@ use crate::config::Config;
 pub struct SearchOptions<'a> {
     pub query: &'a str,
     pub mount_id: Option<i64>,
+    pub file_name: Option<&'a str>,
+    pub regex: bool,
     pub limit: usize,
 }
 
@@ -33,17 +35,22 @@ pub struct SearchHit {
 const CONTEXT_LINES: usize = 2;
 
 pub fn search(config: &Config, options: SearchOptions<'_>) -> Result<Vec<SearchHit>> {
-    let matcher = RegexBuilder::new(&regex::escape(options.query))
+    let pattern = if options.regex {
+        options.query.to_string()
+    } else {
+        regex::escape(options.query)
+    };
+    let matcher = RegexBuilder::new(&pattern)
         .case_insensitive(true)
         .build()
-        .context("cannot build the search matcher")?;
+        .context("invalid search regular expression")?;
     let mut hits = Vec::new();
 
     for mount in &config.mounts {
         if options.mount_id.is_some_and(|id| id != mount.id) {
             continue;
         }
-        collect_mount(mount, &matcher, options.limit, &mut hits)?;
+        collect_mount(mount, &matcher, options.file_name, options.limit, &mut hits)?;
         if hits.len() >= options.limit {
             break;
         }
@@ -55,6 +62,7 @@ pub fn search(config: &Config, options: SearchOptions<'_>) -> Result<Vec<SearchH
 fn collect_mount(
     mount: &crate::config::Mount,
     matcher: &Regex,
+    file_name: Option<&str>,
     limit: usize,
     hits: &mut Vec<SearchHit>,
 ) -> Result<()> {
@@ -94,6 +102,10 @@ fn collect_mount(
             Some(relative) => relative,
             None => continue,
         };
+        if file_name.is_some_and(|filter| !relative.to_lowercase().contains(&filter.to_lowercase()))
+        {
+            continue;
+        }
         let lines: Vec<&str> = content.lines().collect();
         for (index, line) in lines.iter().enumerate() {
             if !matcher.is_match(line) {

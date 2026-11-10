@@ -5,7 +5,7 @@ Mindmount は、自分のメモリを AI と共有するためのローカルサ
 
 Mindmount はローカルファーストの OSS プロジェクトです。
 
-Phase 1（CLI / Storage）、Phase 2（検索・参照・監視）、Phase 3（MCP）、Phase 4（Web ビューア）は実装済みです。
+Phase 1（CLI / Storage）、Phase 2（検索・参照・監視）、Phase 3（MCP・デーモン）、Phase 4（Web ビューア）は実装済みです。
 
 ## ドキュメント
 
@@ -72,11 +72,10 @@ cargo run -- index rescan
 # マウント解除（Markdown ファイルは削除しない）
 cargo run -- storage unmount <mount-id>
 
-# MCP サーバー（stdio）
-cargo run -- mcp
-
-# 閲覧専用 Web ビューア
-cargo run -- serve
+# デーモン（Web ビューア + MCP HTTP + 監視）
+cargo run -- daemon start
+cargo run -- daemon status
+cargo run -- daemon stop
 ```
 
 `mindmount -p ... -d ...` の引数だけの実行でも、マウント登録と index 構築ができます。
@@ -84,13 +83,18 @@ cargo run -- serve
 CLI は責務ごとにグループ化されています。
 
 ```text
+mindmount daemon start|stop|restart|status|run
 mindmount storage mount|list|unmount
 mindmount index rescan|watch|pages|search|references|backlinks
+mindmount metadata get|set
+mindmount link add|delete
 mindmount serve
 mindmount mcp
 ```
 
-`mcp` と `serve` は実装済みです。`serve` は `127.0.0.1` などのループバックにのみ bind します。
+`daemon` は Web ビューア、MCP Streamable HTTP（`/mcp`）、ファイル監視を1プロセスで提供します。
+`serve` は `daemon run` の別名です。`mcp` は任意の stdio アダプタとして残しています。
+bind は `127.0.0.1` / `::1` のループバックに限定されます。
 
 ## ローカルデータ
 
@@ -98,7 +102,10 @@ mindmount mcp
 $XDG_CONFIG_HOME/mindmount/   # 未設定時: ~/.config/mindmount/
 ├── config.toml               # マウント設定の正本
 ├── id-state                  # ID 発行の予約状態
-├── mindmount.lock            # プロセス間ロック
+├── mindmount.lock            # CLI 操作のプロセス間ロック
+├── mindmount.daemon.lock     # デーモンの二重起動防止
+├── daemon.pid                # デーモンの PID
+├── daemon.log                # バックグラウンド起動時のログ
 └── db/mindmount.sqlite       # 派生 index
 ```
 

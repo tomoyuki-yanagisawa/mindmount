@@ -35,6 +35,8 @@ mindmount index pages
 ## コマンド一覧
 
 ```text
+mindmount daemon start|stop|restart|status|run [--host <HOST>] [--port <PORT>]
+
 mindmount storage mount -p <PATH> -d <PATH> [-n <NAME>]
 mindmount storage list
 mindmount storage unmount <MOUNT_ID>
@@ -54,21 +56,26 @@ mindmount -p <PATH> -d <PATH> [-n <NAME>] [--host <HOST>] [--port <PORT>]
 
 | コマンド | 目的 |
 |---|---|
+| `daemon start` | Web・MCP HTTP・監視をバックグラウンドで起動する |
+| `daemon stop` | デーモンを停止する |
+| `daemon restart` | デーモンを再起動する |
+| `daemon status` | デーモンの稼働状態を表示する |
+| `daemon run` | デーモンをフォアグラウンドで起動する |
 | `storage mount` | ディレクトリを登録し、index を構築する |
 | `storage list` | 登録済みマウントを一覧表示する |
 | `storage unmount` | マウントを inactive にし、DB データを保持する |
 | `index rescan` | 全マウントの index を再構築する |
 | `index watch` | ファイルの変更を監視して index を更新する |
 | `index pages` | index 済みページを一覧表示する |
-| `index search` | index 済み Markdown を文字列で検索する |
+| `index search` | 実ファイルを grep 検索する |
 | `index references` | ページからのリンクを一覧表示する |
 | `index backlinks` | ページへのリンクを一覧表示する |
 | `metadata get` | DB 独自メタデータを表示する |
 | `metadata set` | DB 独自メタデータを設定する |
 | `link add` | Knowledge Link を追加する |
 | `link delete` | Knowledge Link を削除する |
-| `serve` | 読み取り専用 Web ビューアを起動する |
-| `mcp` | MCP stdio サーバーを起動する |
+| `serve` | デーモンをフォアグラウンドで起動する（`daemon run` の別名） |
+| `mcp` | 任意の MCP stdio アダプタを起動する |
 
 引数だけの `mindmount -p ... -d ...` は、`storage mount` と同じ登録・index 構築を行います。
 
@@ -294,14 +301,34 @@ mindmount -p ~/Project/app -d ./notes -n "Project notes"
 note: the read-only web viewer will listen on 127.0.0.1:3000 starting in Phase 4
 ```
 
+## daemon
+
+```bash
+mindmount daemon start
+mindmount daemon status
+mindmount daemon stop
+mindmount daemon restart
+mindmount daemon run
+```
+
+デーモンは Web ビューア、MCP Streamable HTTP、ファイル監視を1プロセスで提供します。
+`daemon start` はバックグラウンド、`daemon run` はフォアグラウンドで起動します。
+`serve` は `daemon run` の別名です。
+
+- Web: `http://127.0.0.1:3000/`
+- MCP: `http://127.0.0.1:3000/mcp`
+- bind は `127.0.0.1` / `::1` のループバックのみ
+- 二重起動はロックで拒否
+- バックグラウンド起動時のログ: `~/.config/mindmount/daemon.log`
+
 ## mcp
 
 ```bash
 mindmount mcp
 ```
 
-stdio の MCP サーバーを起動します。AI クライアントの MCP 設定で、コマンドを
-`mindmount`、引数を `mcp` に指定してください。
+通常はデーモンの `/mcp` を MCP クライアントから利用します。stdio が必要な場合は
+`mindmount mcp` を任意のアダプタとして使えます。
 
 Tools:
 
@@ -326,8 +353,9 @@ mindmount serve
 mindmount serve --port 8080
 ```
 
-**読み取り専用の Web ビューア**を起動します。既定では `127.0.0.1:3000` で待ち受けます。
-bind 先は `127.0.0.1` または `::1` のループバックに限定されます。
+**読み取り専用の Web ビューア**と MCP HTTP をフォアグラウンドで起動します。
+既定では `127.0.0.1:3000` で待ち受けます。bind 先は `127.0.0.1` または `::1` の
+ループバックに限定されます。バックグラウンド実行は `daemon start` を使います。
 
 表示できるもの:
 
@@ -414,9 +442,12 @@ mtime は保存しますが、変更判定には使いません。
 $XDG_CONFIG_HOME/mindmount/   # 未設定時: ~/.config/mindmount/
 ├── config.toml               # マウント設定の正本
 ├── id-state                  # Snowflake ID の発行状態
-├── mindmount.lock            # プロセス間の排他制御
+├── mindmount.lock            # CLI 操作のプロセス間排他制御
+├── mindmount.daemon.lock     # デーモンの二重起動防止
+├── daemon.pid                # デーモンの PID
+├── daemon.log                # バックグラウンド起動時のログ
 └── db/
-    └── mindmount.sqlite      # 派生 index
+    └── mindmount.sqlite      # 派生 index と DB 独自データ
 ```
 
 `config.toml` の例:
@@ -433,7 +464,7 @@ created_at = "2026-11-09T11:20:04.405660Z"
 ```
 
 - `config.toml` がマウント設定の正本
-- SQLite は派生データ。削除しても `index rescan` で再構築できる
+- SQLite は派生 index と、メタデータ・Knowledge Links などの永続データを含む。DB を削除すると後者は失われる
 - 検索は実ファイルを直接読むため、SQLite に Markdown の本文は保存されない
 - macOS / Linux では、起動時に Mindmount のデータディレクトリと DB ファイルからグループ・その他ユーザーのアクセス権を取り除く
 - `node_id` は 0〜1023。通常は変更しない

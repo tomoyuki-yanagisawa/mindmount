@@ -17,7 +17,12 @@ use rmcp::{
     schemars,
     service::RequestContext,
     tool, tool_router,
-    transport::stdio,
+    transport::{
+        stdio,
+        streamable_http_server::{
+            session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
+        },
+    },
     ErrorData, RoleServer, ServerHandler, ServiceExt,
 };
 use serde::Deserialize;
@@ -41,9 +46,13 @@ pub struct Mindmount {
 
 impl Mindmount {
     fn new(paths: AppPaths, database: Database) -> Self {
+        Self::from_shared(paths, Arc::new(database))
+    }
+
+    pub(crate) fn from_shared(paths: AppPaths, database: Arc<Database>) -> Self {
         Self {
             paths,
-            database: Arc::new(database),
+            database,
             tool_router: Self::tool_router(),
         }
     }
@@ -55,6 +64,17 @@ impl Mindmount {
     fn database(&self) -> &Database {
         self.database.as_ref()
     }
+}
+
+pub fn http_service(
+    paths: AppPaths,
+    database: Arc<Database>,
+) -> StreamableHttpService<Mindmount, LocalSessionManager> {
+    StreamableHttpService::new(
+        move || Ok(Mindmount::from_shared(paths.clone(), database.clone())),
+        Default::default(),
+        StreamableHttpServerConfig::default(),
+    )
 }
 
 pub async fn run(paths: &AppPaths) -> Result<()> {

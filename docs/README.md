@@ -31,8 +31,10 @@ Mindmount はローカルファーストの OSS プロジェクトです。自�
 - `index search` による実ファイルの grep 検索
 - `index references` / `index backlinks` による参照一覧
 - `index watch` によるファイル監視と自動再走査
-- MCP stdio サーバー（`mounts` / `list` / `search` / `read` / `write` / `references` / `backlinks`）
+- デーモン（Web ビューア、MCP Streamable HTTP、ファイル監視）
+- MCP Tools（`mounts` / `list` / `search` / `read` / `write` / `links` / `backlinks` / `metadata_get` / `metadata_set` / `link_add` / `link_delete`）
 - MCP Resources（`mindmount://<mount-id>/documents/<document-id>`）
+- 任意の MCP stdio アダプタ
 - 閲覧専用 Web ビューア（マウント一覧、ページ、検索、参照・バックリンク）
 
 未実装の主な機能:

@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use anyhow::{bail, Context, Result};
 use askama::Template;
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{header, StatusCode};
@@ -29,6 +28,16 @@ pub struct AppState {
     port: u16,
 }
 
+impl AppState {
+    pub fn new(paths: AppPaths, database: Arc<Database>, port: u16) -> Self {
+        Self {
+            paths,
+            database,
+            port,
+        }
+    }
+}
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(mounts_page))
@@ -41,39 +50,11 @@ pub fn router(state: AppState) -> Router {
         .layer(middleware::from_fn_with_state(state, guard))
 }
 
-pub async fn run(paths: &AppPaths, host: &str, port: u16) -> Result<()> {
-    if !is_loopback(host) {
-        bail!("serve binds only to a loopback address (127.0.0.1 or ::1)");
-    }
-
-    let database = Database::open(&paths.database_file()).await?;
-    let listener = tokio::net::TcpListener::bind((host, port))
-        .await
-        .with_context(|| format!("cannot bind {host}:{port}"))?;
-    let port = listener.local_addr()?.port();
-    let state = AppState {
-        paths: paths.clone(),
-        database: Arc::new(database),
-        port,
-    };
-    let app = router(state);
-    let display_host = if host.contains(':') {
-        format!("[{host}]")
-    } else {
-        host.to_string()
-    };
-    eprintln!("Mindmount viewer listening on http://{display_host}:{port}");
-    axum::serve(listener, app)
-        .await
-        .context("the web server stopped unexpectedly")?;
-    Ok(())
-}
-
-fn is_loopback(host: &str) -> bool {
+pub(crate) fn is_loopback(host: &str) -> bool {
     matches!(host, "127.0.0.1" | "::1")
 }
 
-async fn guard(State(state): State<AppState>, request: Request, next: Next) -> Response {
+pub(crate) async fn guard(State(state): State<AppState>, request: Request, next: Next) -> Response {
     let Some(host) = request
         .headers()
         .get(header::HOST)

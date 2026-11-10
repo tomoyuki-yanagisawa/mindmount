@@ -31,7 +31,8 @@ Mindmount は、自分のメモリを AI と共有するためのローカルサ
 - 実ファイルへの grep 検索（本文 index なし）
 - Markdown リンク・Wiki リンクの参照とバックリンク
 - `index watch` によるファイル監視
-- MCP stdio サーバー（Tools / Resources）
+- デーモン（Web / MCP HTTP / ファイル監視）
+- MCP Streamable HTTP サーバー（Tools / Resources、stdio は任意）
 - 閲覧専用 Web ビューア
 
 未実装:
@@ -47,7 +48,8 @@ main.rs
   ├── cli/                CLI アダプタ
   │     ├── mod.rs        clap 定義、コマンド分岐、ロック
   │     └── output.rs     CLI 表示
-  ├── mcp/                MCP stdio アダプタ
+  ├── daemon/             デーモン（Web / MCP HTTP / 監視）
+  ├── mcp/                MCP サーバー（HTTP、任意の stdio アダプタ）
   ├── web/                閲覧専用 Web アダプタ
   ├── usecase/            CLI / MCP / Web が共有する操作（出力なし）
   │     ├── mount.rs      マウント登録・一覧・解除
@@ -64,7 +66,8 @@ main.rs
   ├── index/              走査・index 更新・監視
   └── storage/            マウント配下の安全なファイルアクセス
 
-web/ は cli/ / mcp/ と同じ階層で、usecase/ を呼ぶ。
+daemon/ は web/ と mcp/ を同じ Axum サーバーに載せ、index/watch を起動する。
+CLI は共有 usecase を直接使い、Unix Socket や管理 API は設けない。
 ```
 
 ### モジュールの責務
@@ -74,7 +77,8 @@ web/ は cli/ / mcp/ と同じ階層で、usecase/ を呼ぶ。
 | `main.rs` | ログ初期化、CLI パース、`cli::run` の呼び出し |
 | `cli/mod.rs` | コマンド、引数、ヘルプの定義、分岐、ロック |
 | `cli/output.rs` | CLI 向けの表示 |
-| `mcp/mod.rs` | MCP stdio サーバー、Tools、Resources |
+| `daemon/mod.rs` | デーモン起動、Web と MCP HTTP の統合、監視 |
+| `mcp/mod.rs` | MCP Tools / Resources、HTTP サービス、任意の stdio アダプタ |
 | `web/mod.rs` | Axum / Askama による閲覧専用ビューア |
 | `usecase/mount.rs` | マウント登録・一覧・解除（出力なし） |
 | `usecase/index.rs` | 再 index・ページ・検索・参照（出力なし） |
@@ -92,7 +96,7 @@ web/ は cli/ / mcp/ と同じ階層で、usecase/ を呼ぶ。
 | `index/indexer.rs` | 走査、差分計算、参照解決、全マウント同期 |
 | `index/watch.rs` | ファイル監視と再走査 |
 
-依存方向は `cli` / `mcp` / `web` → `usecase` → `index` / `config` / `db` / `storage` / `core` です。
+依存方向は `cli` / `daemon` → `web` / `mcp`、`web` / `mcp` → `usecase` → `index` / `config` / `db` / `storage` / `core` です。
 `db` は `core` のドメイン型だけを使い、Markdown 解析やリンク解決には依存しません。
 SQLite 固有の型は `db` の外へ漏らさず、呼び出し側は `Mount` や `Document` を扱います。
 `usecase` は出力を持たないため、Phase 3 の MCP と Phase 4 の Web から同じ処理を
@@ -400,8 +404,11 @@ MCP の `write` Tool（Phase 3）では、`content_hash` による楽観的ロ�
 ## 9. CLI 設計
 
 ```text
+mindmount daemon start|stop|restart|status|run
 mindmount storage mount|list|unmount
 mindmount index rescan|watch|pages|search|references|backlinks
+mindmount metadata get|set
+mindmount link add|delete
 mindmount serve
 mindmount mcp
 ```
@@ -436,7 +443,8 @@ Phase 4 以降は Web ビューアも起動する予定です。
 
 ### 10.2 MCP
 
-Rust 公式 SDK `rmcp` の stdio transport を使います。
+Rust 公式 SDK `rmcp` を使います。デーモンが Streamable HTTP を `/mcp` で提供し、
+stdio は任意の薄いアダプタ（`mindmount mcp`）として残します。
 
 Tools:
 
@@ -462,7 +470,11 @@ Resources:
 
 MCP サーバーは CLI や `index watch` と同じ `usecase` を使います。書き込み時だけアプリケーション
 ロックを取得して index を同期します。stdio MCP では stdout にログを出さず、ログは stderr に
-限定します。
+限定します。HTTP MCP も同じハンドラを利用します。
+
+デーモンは `127.0.0.1` / `::1` にのみ bind し、`daemon start|stop|status|run` で管理します。
+CLI はデーモンを必須にせず、同じ usecase を直接使います。デーモンは設定ファイルの変更を
+監視してマウントを追従します。
 
 ### 10.3 共通コア
 
@@ -479,7 +491,7 @@ UI とプロトコルの層を分離し、どちらからも同じドメイン�
 - `id` と `db` は `thiserror` でドメインエラーを定義する
 - index 構築では、1 ファイルの読み取り失敗を警告にして処理を続ける
 - マウント単位の失敗は `index rescan` の最後にまとめて非ゼロ終了する
-- ログは stderr。将来の stdio MCP でも stdout を汚さない
+- ログは stderr。stdio MCP でも stdout を汚さない
 - `RUST_LOG` でフィルタを変更できる。既定は `mindmount=warn,warn`
 
 終了コード:
@@ -504,6 +516,7 @@ UI とプロトコルの層を分離し、どちらからも同じドメイン�
 - Document: ページの読み書き、`content_hash` による楽観的ロック、新規作成
 - Search: 実ファイルの grep、日本語、行番号、前後文脈、件数上限
 - MCP: initialize、tools/list、resources/list / read、read / write の stdio 結合テスト
+- Daemon: バックグラウンド起動、Web、MCP HTTP の initialize、停止
 - Web: マウント一覧、ページ表示、検索、Host / Origin 拒否、実サーバーの HTTP 応答
 
 ### 12.2 統合テスト
@@ -548,8 +561,8 @@ cargo fmt --all -- --check
 - frontmatter は簡易 YAML パーサ
 - 検索は実ファイルへの grep。結果は行単位で、履歴 index は持たない
 - Wiki リンクの解決はマウント内に限定し、同名候補が複数ある場合は未解決とする
-- MCP は stdio transport のみ
 - Web は閲覧専用で、検索はサーバー描画（部分更新なし）
+- CLI はデーモン経由ではなく、同じ usecase をローカルで実行する
 - ローカル Web UI は閲覧専用（編集機能なし）
 - 複数プロセス間の index 更新は完全には直列化していない
 - Snowflake のノード ID 衝突を跨端末で完全には防げない

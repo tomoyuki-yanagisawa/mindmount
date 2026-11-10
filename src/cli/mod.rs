@@ -10,6 +10,7 @@ use serde_json::Value;
 
 use crate::config::{AppPaths, Config};
 use crate::core::id::Snowflake;
+use crate::daemon;
 use crate::db::Database;
 use crate::usecase::{index as index_ops, knowledge, mount};
 
@@ -50,10 +51,29 @@ pub enum Command {
         #[command(subcommand)]
         command: LinkCommand,
     },
-    /// Start the read-only web viewer.
+    /// Manage the local daemon.
+    Daemon {
+        #[command(subcommand)]
+        command: DaemonCommand,
+    },
+    /// Start the daemon in the foreground (web viewer and MCP HTTP).
     Serve(ServerOptions),
-    /// Start the MCP stdio server.
+    /// Start the optional MCP stdio server.
     Mcp,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum DaemonCommand {
+    /// Start the daemon in the background.
+    Start(ServerOptions),
+    /// Stop the background daemon.
+    Stop,
+    /// Restart the background daemon.
+    Restart(ServerOptions),
+    /// Report whether the background daemon is running.
+    Status,
+    /// Run the daemon in the foreground.
+    Run(ServerOptions),
 }
 
 #[derive(Debug, Subcommand)]
@@ -192,8 +212,21 @@ pub async fn run(cli: Cli) -> Result<()> {
     if matches!(cli.command, Some(Command::Mcp)) {
         return crate::mcp::run(&paths).await;
     }
+    if let Some(Command::Daemon { command }) = &cli.command {
+        return match command {
+            DaemonCommand::Start(options) => {
+                daemon::start(&paths, &options.host, options.port).await
+            }
+            DaemonCommand::Stop => daemon::stop(&paths).await,
+            DaemonCommand::Restart(options) => {
+                daemon::restart(&paths, &options.host, options.port).await
+            }
+            DaemonCommand::Status => daemon::status(&paths).await,
+            DaemonCommand::Run(options) => daemon::run(&paths, &options.host, options.port).await,
+        };
+    }
     if let Some(Command::Serve(options)) = &cli.command {
-        return crate::web::run(&paths, &options.host, options.port).await;
+        return daemon::run(&paths, &options.host, options.port).await;
     }
     if matches!(
         cli.command,
@@ -323,6 +356,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                 );
             }
         },
+        Some(Command::Daemon { .. }) => unreachable!("daemon is handled before acquiring the lock"),
         Some(Command::Serve(_)) => unreachable!("serve is handled before acquiring the lock"),
         Some(Command::Mcp) => unreachable!("mcp is handled before acquiring the lock"),
     }

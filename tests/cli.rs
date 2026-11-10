@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -97,25 +97,6 @@ fn assert_failure(output: &Output) {
 
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-fn mcp_call(
-    stdin: &mut impl Write,
-    receiver: &std::sync::mpsc::Receiver<String>,
-    id: u64,
-    request: &str,
-) -> serde_json::Value {
-    writeln!(stdin, "{request}").unwrap();
-    stdin.flush().unwrap();
-    loop {
-        let line = receiver
-            .recv_timeout(Duration::from_secs(10))
-            .expect("no MCP response");
-        let value: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-        if value.get("id") == Some(&serde_json::json!(id)) {
-            return value;
-        }
-    }
 }
 
 fn stderr(output: &Output) -> String {
@@ -664,7 +645,7 @@ fn root_invocation_mounts_and_notes_the_phase_four_server() {
     ]);
     assert_success(&output);
     assert!(stdout(&output).contains("Mounted \"Root note\""));
-    assert!(stdout(&output).contains("mindmount serve"));
+    assert!(stdout(&output).contains("mindmount daemon start"));
     assert_eq!(env.load_config().mounts.len(), 1);
 }
 
@@ -698,16 +679,16 @@ fn refuses_concurrent_operations_without_modifying_configuration() {
 }
 
 #[test]
-fn serve_rejects_non_loopback_hosts() {
+fn daemon_start_rejects_non_loopback_hosts() {
     let env = TestEnv::new();
 
-    let output = env.run(&["serve", "--host", "0.0.0.0"]);
+    let output = env.run(&["daemon", "start", "--host", "0.0.0.0"]);
     assert_failure(&output);
     assert!(stderr(&output).contains("loopback"));
 }
 
 #[test]
-fn serve_starts_and_serves_mounts() {
+fn daemon_run_serves_mounts() {
     let env = TestEnv::new();
     assert_success(&env.mount("Notes"));
 
@@ -718,7 +699,7 @@ fn serve_starts_and_serves_mounts() {
         .port();
     let mut child = env
         .command()
-        .args(["serve", "--port", &port.to_string()])
+        .args(["daemon", "run", "--port", &port.to_string()])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -726,7 +707,7 @@ fn serve_starts_and_serves_mounts() {
 
     let deadline = Instant::now() + Duration::from_secs(10);
     while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
-        assert!(Instant::now() < deadline, "serve did not start");
+        assert!(Instant::now() < deadline, "daemon did not start");
         std::thread::sleep(Duration::from_millis(100));
     }
 
@@ -892,166 +873,4 @@ fn mount_sync_updates_a_single_mount() {
     let output = env.run(&["mount", "sync", &mount_id]);
     assert_success(&output);
     assert!(stdout(&env.run(&["index", "pages"])).contains("Synced"));
-}
-
-#[test]
-fn mcp_lists_tools_and_reads_a_page() {
-    let env = TestEnv::new();
-    assert_success(&env.mount("Notes"));
-    let mount = env.load_config().mounts[0].clone();
-
-    let mut child = env
-        .command()
-        .args(["mcp"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let mut stdin = child.stdin.take().unwrap();
-    let stdout = child.stdout.take().unwrap();
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut reader = BufReader::new(stdout);
-        loop {
-            let mut line = String::new();
-            if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                break;
-            }
-            let _ = sender.send(line);
-        }
-    });
-
-    let init = mcp_call(
-        &mut stdin,
-        &receiver,
-        1,
-        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#,
-    );
-    assert!(init["result"]["protocolVersion"].is_string(), "{init}");
-
-    writeln!(
-        stdin,
-        r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#
-    )
-    .unwrap();
-    stdin.flush().unwrap();
-
-    let tools = mcp_call(
-        &mut stdin,
-        &receiver,
-        2,
-        r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
-    );
-    let names: Vec<&str> = tools["result"]["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|tool| tool["name"].as_str())
-        .collect();
-    for expected in [
-        "mounts",
-        "list",
-        "search",
-        "read",
-        "write",
-        "links",
-        "backlinks",
-        "metadata_get",
-        "metadata_set",
-        "link_add",
-        "link_delete",
-    ] {
-        assert!(names.contains(&expected), "missing {expected}: {names:?}");
-    }
-
-    let read_request = format!(
-        r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"read","arguments":{{"mount_id":{},"path":"index.md"}}}}}}"#,
-        mount.id
-    );
-    let read = mcp_call(&mut stdin, &receiver, 3, &read_request);
-    let content = read["result"]["structuredContent"]["content"]
-        .as_str()
-        .unwrap();
-    assert!(content.contains("Index"), "{read}");
-    let document_id = read["result"]["structuredContent"]["id"].as_i64().unwrap();
-    let expected_hash = read["result"]["structuredContent"]["content_hash"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    let resources = mcp_call(
-        &mut stdin,
-        &receiver,
-        4,
-        r#"{"jsonrpc":"2.0","id":4,"method":"resources/list"}"#,
-    );
-    let uri = format!("mindmount://{}/documents/{document_id}", mount.id);
-    assert!(
-        resources["result"]["resources"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|resource| resource["uri"].as_str() == Some(uri.as_str())),
-        "{resources}"
-    );
-    let resource_read = mcp_call(
-        &mut stdin,
-        &receiver,
-        5,
-        &serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 5,
-            "method": "resources/read",
-            "params": { "uri": uri },
-        })
-        .to_string(),
-    );
-    assert!(
-        resource_read["result"]["contents"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("Index"),
-        "{resource_read}"
-    );
-
-    let write = mcp_call(
-        &mut stdin,
-        &receiver,
-        6,
-        &serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 6,
-            "method": "tools/call",
-            "params": {
-                "name": "write",
-                "arguments": {
-                    "mount_id": mount.id,
-                    "path": "index.md",
-                    "content": "# Updated\n",
-                    "expected_hash": expected_hash,
-                },
-            },
-        })
-        .to_string(),
-    );
-    assert_eq!(
-        write["result"]["structuredContent"]["path"].as_str(),
-        Some("index.md"),
-        "{write}"
-    );
-
-    let reread_request = format!(
-        r#"{{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{{"name":"read","arguments":{{"mount_id":{},"path":"index.md"}}}}}}"#,
-        mount.id
-    );
-    let reread = mcp_call(&mut stdin, &receiver, 7, &reread_request);
-    assert_eq!(
-        reread["result"]["structuredContent"]["content"].as_str(),
-        Some("# Updated\n"),
-        "{reread}"
-    );
-
-    let _ = child.kill();
-    let _ = child.wait();
 }

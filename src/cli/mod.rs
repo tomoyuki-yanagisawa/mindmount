@@ -63,10 +63,6 @@ pub enum Command {
     },
     /// Print the version.
     Version,
-    /// Start the daemon in the foreground (web viewer and MCP HTTP).
-    Serve(ServerOptions),
-    /// Start the optional MCP stdio server.
-    Mcp,
 }
 
 #[derive(Debug, Subcommand)]
@@ -231,9 +227,6 @@ pub async fn run(cli: Cli) -> Result<()> {
 
     let paths = AppPaths::from_env()?;
     paths.ensure_dirs()?;
-    if matches!(cli.command, Some(Command::Mcp)) {
-        return crate::mcp::run(&paths).await;
-    }
     if let Some(Command::Daemon { command }) = &cli.command {
         return match command {
             DaemonCommand::Start(options) => {
@@ -246,9 +239,6 @@ pub async fn run(cli: Cli) -> Result<()> {
             DaemonCommand::Status => daemon::status(&paths).await,
             DaemonCommand::Run(options) => daemon::run(&paths, &options.host, options.port).await,
         };
-    }
-    if let Some(Command::Serve(options)) = &cli.command {
-        return daemon::run(&paths, &options.host, options.port).await;
     }
     if matches!(
         cli.command,
@@ -281,7 +271,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             .await?;
             output::mount_result(&result);
             println!(
-                "note: run `mindmount serve --host {} --port {}` to open the read-only web viewer",
+                "note: run `mindmount daemon start --host {} --port {}` to open the read-only web viewer",
                 cli.server.host, cli.server.port
             );
         }
@@ -403,8 +393,6 @@ pub async fn run(cli: Cli) -> Result<()> {
         }
         Some(Command::Version) => println!("mindmount {}", env!("CARGO_PKG_VERSION")),
         Some(Command::Daemon { .. }) => unreachable!("daemon is handled before acquiring the lock"),
-        Some(Command::Serve(_)) => unreachable!("serve is handled before acquiring the lock"),
-        Some(Command::Mcp) => unreachable!("mcp is handled before acquiring the lock"),
     }
 
     Ok(())

@@ -1,8 +1,7 @@
-//! MCP stdio server exposing the local Markdown corpus.
+//! MCP server exposing the local Markdown corpus.
 
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
 use rmcp::{
     handler::server::{
         router::tool::ToolRouter,
@@ -17,13 +16,10 @@ use rmcp::{
     schemars,
     service::RequestContext,
     tool, tool_router,
-    transport::{
-        stdio,
-        streamable_http_server::{
-            session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
-        },
+    transport::streamable_http_server::{
+        session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
     },
-    ErrorData, RoleServer, ServerHandler, ServiceExt,
+    ErrorData, RoleServer, ServerHandler,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -45,10 +41,6 @@ pub struct Mindmount {
 }
 
 impl Mindmount {
-    fn new(paths: AppPaths, database: Database) -> Self {
-        Self::from_shared(paths, Arc::new(database))
-    }
-
     pub(crate) fn from_shared(paths: AppPaths, database: Arc<Database>) -> Self {
         Self {
             paths,
@@ -77,20 +69,6 @@ pub fn http_service(
     )
 }
 
-pub async fn run(paths: &AppPaths) -> Result<()> {
-    let database = Database::open(&paths.database_file()).await?;
-    let server = Mindmount::new(paths.clone(), database);
-    let service = server
-        .serve(stdio())
-        .await
-        .context("cannot start the MCP server")?;
-    service
-        .waiting()
-        .await
-        .context("the MCP server stopped unexpectedly")?;
-    Ok(())
-}
-
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct ListArgs {
     #[schemars(description = "Only list documents in this mount.")]
@@ -117,22 +95,6 @@ struct ReadArgs {
     mount_id: Option<i64>,
     #[schemars(description = "Path relative to the mount root when reading by path.")]
     path: Option<String>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct WriteArgs {
-    #[schemars(description = "Indexed document id. Takes precedence over path.")]
-    document_id: Option<i64>,
-    #[schemars(description = "Mount id when writing by path.")]
-    mount_id: Option<i64>,
-    #[schemars(description = "Path relative to the mount root when writing by path.")]
-    path: Option<String>,
-    #[schemars(description = "Full Markdown content to write.")]
-    content: String,
-    #[schemars(
-        description = "content_hash returned by read. Required to update an existing page; omit to create a new one."
-    )]
-    expected_hash: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -184,12 +146,6 @@ struct LinkDeleteArgs {
 }
 
 impl ReadArgs {
-    fn target(&self) -> Result<DocumentTarget, ErrorData> {
-        target(self.document_id, self.mount_id, self.path.clone())
-    }
-}
-
-impl WriteArgs {
     fn target(&self) -> Result<DocumentTarget, ErrorData> {
         target(self.document_id, self.mount_id, self.path.clone())
     }
@@ -284,30 +240,6 @@ impl Mindmount {
             .await
             .map_err(internal)?;
         Ok(Json(read_json(&result)))
-    }
-
-    #[tool(
-        description = "Write a Markdown page. Updating requires expected_hash from read; creating omits it."
-    )]
-    async fn write(
-        &self,
-        Parameters(args): Parameters<WriteArgs>,
-    ) -> Result<Json<Value>, ErrorData> {
-        let result = document::write(
-            &self.paths,
-            self.database(),
-            args.target()?,
-            &args.content,
-            args.expected_hash.as_deref(),
-        )
-        .await
-        .map_err(internal)?;
-        Ok(Json(json!({
-            "id": result.document.id,
-            "mount_id": result.mount.id,
-            "path": result.document.relative_path,
-            "content_hash": result.content_hash,
-        })))
     }
 
     #[tool(description = "List links from a page.")]
@@ -536,4 +468,30 @@ fn parse_resource_uri(uri: &str) -> Option<(i64, i64)> {
     let rest = uri.strip_prefix("mindmount://")?;
     let (mount_id, document_id) = rest.split_once("/documents/")?;
     Some((mount_id.parse().ok()?, document_id.parse().ok()?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exposes_the_expected_tools_without_write() {
+        let tools = Mindmount::tool_router().list_all();
+        let names: Vec<&str> = tools.iter().map(|tool| tool.name.as_ref()).collect();
+        for expected in [
+            "mounts",
+            "list",
+            "search",
+            "read",
+            "links",
+            "backlinks",
+            "metadata_get",
+            "metadata_set",
+            "link_add",
+            "link_delete",
+        ] {
+            assert!(names.contains(&expected), "missing {expected}: {names:?}");
+        }
+        assert!(!names.contains(&"write"));
+    }
 }

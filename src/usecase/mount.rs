@@ -20,6 +20,7 @@ pub struct MountResult {
 pub struct MountRow {
     pub mount: Mount,
     pub documents: i64,
+    pub active: bool,
 }
 
 pub async fn register(
@@ -132,17 +133,36 @@ pub async fn register(
     })
 }
 
-pub async fn list(config: &Config, database: &Database) -> Result<Vec<MountRow>> {
+pub async fn list(
+    config: &Config,
+    database: &Database,
+    include_inactive: bool,
+) -> Result<Vec<MountRow>> {
     database.sync_mounts(&config.mounts).await?;
     let counts = database.document_counts().await?;
-    Ok(config
+    let mut rows: Vec<MountRow> = config
         .mounts
         .iter()
         .map(|mount| MountRow {
             mount: mount.clone(),
             documents: counts.get(&mount.id).copied().unwrap_or(0),
+            active: true,
         })
-        .collect())
+        .collect();
+    if include_inactive {
+        rows.extend(
+            database
+                .inactive_mounts()
+                .await?
+                .into_iter()
+                .map(|mount| MountRow {
+                    mount,
+                    documents: 0,
+                    active: false,
+                }),
+        );
+    }
+    Ok(rows)
 }
 
 pub async fn unmount(

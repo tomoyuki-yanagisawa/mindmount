@@ -60,9 +60,7 @@ pub async fn run(paths: &AppPaths, host: &str, port: u16) -> Result<()> {
     eprintln!("Mindmount daemon listening on http://{display_host}:{port} (web and /mcp)");
 
     let result = axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
+        .with_graceful_shutdown(shutdown_signal())
         .await;
     let _ = fs::remove_file(paths.daemon_pid_file());
     result.context("the daemon stopped unexpectedly")
@@ -155,6 +153,23 @@ fn is_running(pid: u32) -> bool {
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("cannot install the SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {}
+            _ = terminate.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::signal::ctrl_c().await;
+    }
 }
 
 async fn require_bearer(State(token): State<String>, request: Request, next: Next) -> Response {

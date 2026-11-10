@@ -154,6 +154,7 @@ mod tests {
                     raw: item.raw,
                     kind: item.kind,
                     line: item.line,
+                    heading: item.heading,
                 });
             }
         }

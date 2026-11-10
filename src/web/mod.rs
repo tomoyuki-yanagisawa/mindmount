@@ -91,6 +91,8 @@ fn origin_allowed(origin: &str, host: &str) -> bool {
 struct SearchQuery {
     q: Option<String>,
     mount: Option<i64>,
+    file: Option<String>,
+    regex: Option<String>,
 }
 
 struct MountView {
@@ -151,6 +153,8 @@ struct SearchHitView {
 #[template(path = "search.html")]
 struct SearchTemplate {
     query: String,
+    file: String,
+    regex: bool,
     mounts: Vec<MountOption>,
     results: Vec<SearchHitView>,
     searched: bool,
@@ -158,7 +162,7 @@ struct SearchTemplate {
 
 async fn mounts_page(State(state): State<AppState>) -> Result<Html<String>, AppError> {
     let config = load_config(&state)?;
-    let rows = mount_ops::list(&config, &state.database)
+    let rows = mount_ops::list(&config, &state.database, false)
         .await
         .map_err(AppError::internal)?;
     let mounts = rows
@@ -249,11 +253,20 @@ async fn search_page(
 ) -> Result<Html<String>, AppError> {
     let config = load_config(&state)?;
     let text = query.q.unwrap_or_default();
+    let file = query.file.unwrap_or_default();
+    let regex = query.regex.is_some();
     let searched = !text.trim().is_empty();
     let results = if searched {
-        index_ops::search(&config, &state.database, &text, query.mount)
-            .await
-            .map_err(AppError::internal)?
+        index_ops::search(
+            &config,
+            &state.database,
+            &text,
+            query.mount,
+            (!file.trim().is_empty()).then_some(file.as_str()),
+            regex,
+        )
+        .await
+        .map_err(AppError::internal)?
     } else {
         Vec::new()
     };
@@ -284,6 +297,8 @@ async fn search_page(
 
     render(SearchTemplate {
         query: text,
+        file,
+        regex,
         mounts,
         results,
         searched,

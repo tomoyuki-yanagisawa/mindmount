@@ -129,13 +129,14 @@ impl Database {
                 "INSERT INTO markdown_links
                     (source_document_id, target_document_id, target_uri, target_anchor,
                      raw_reference, source_heading, source_line, resolution_status, source_kind)
-                 VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)",
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(reference.source_id)
             .bind(reference.target_id)
             .bind(&reference.target)
             .bind(&reference.anchor)
             .bind(&reference.raw)
+            .bind(&reference.heading)
             .bind(reference.line as i64)
             .bind(if reference.target_id.is_some() {
                 "resolved"

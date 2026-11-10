@@ -442,6 +442,16 @@ fn search_treats_query_as_literal_and_validates_mount() {
         assert_success(&output);
         assert!(stdout(&output).contains("literal.md"), "query: {query}");
     }
+    fs::write(env.notes.join("other.md"), "# Other\nA quoted value\n").unwrap();
+    let filtered = env.run(&["index", "search", "quoted", "--file", "literal"]);
+    assert_success(&filtered);
+    assert!(stdout(&filtered).contains("literal.md"));
+    assert!(!stdout(&filtered).contains("other.md"));
+    let regex = env.run(&[
+        "index", "search", "qu[o]ted", "--regex", "--file", "literal",
+    ]);
+    assert_success(&regex);
+    assert!(stdout(&regex).contains("literal.md"));
     assert_failure(&env.run(&["index", "search", ""]));
     assert_failure(&env.run(&["index", "search", "test", "--mount", "999"]));
 }
@@ -514,6 +524,11 @@ fn mount_lists_pages_and_unmount_leaves_files_untouched() {
     let output = env.run(&["mount", "list"]);
     assert_success(&output);
     assert!(stdout(&output).contains("No mounts registered."));
+
+    let output = env.run(&["mount", "list", "--all"]);
+    assert_success(&output);
+    assert!(stdout(&output).contains("Notes"));
+    assert!(stdout(&output).contains("\tno\t"));
 
     let output = env.run(&["index", "pages"]);
     assert_success(&output);

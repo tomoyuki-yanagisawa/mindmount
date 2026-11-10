@@ -99,10 +99,14 @@ struct ListArgs {
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 struct SearchArgs {
-    #[schemars(description = "Literal text to search for.")]
+    #[schemars(description = "Text or regular expression to search for.")]
     query: String,
     #[schemars(description = "Only search within this mount.")]
     mount_id: Option<i64>,
+    #[schemars(description = "Only search files whose relative path contains this text.")]
+    filename: Option<String>,
+    #[schemars(description = "Treat query as a regular expression.")]
+    regex: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -248,9 +252,16 @@ impl Mindmount {
         Parameters(args): Parameters<SearchArgs>,
     ) -> Result<Json<Value>, ErrorData> {
         let config = self.config()?;
-        let hits = index_ops::search(&config, self.database(), &args.query, args.mount_id)
-            .await
-            .map_err(internal)?;
+        let hits = index_ops::search(
+            &config,
+            self.database(),
+            &args.query,
+            args.mount_id,
+            args.filename.as_deref(),
+            args.regex.unwrap_or(false),
+        )
+        .await
+        .map_err(internal)?;
         Ok(Json(json!(hits
             .iter()
             .map(|hit| json!({

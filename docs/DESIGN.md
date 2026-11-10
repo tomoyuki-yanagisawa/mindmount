@@ -247,8 +247,8 @@ CREATE TABLE knowledge_links (
 );
 ```
 
-- `markdown_links` は Markdown / Wiki リンクの派生データ。`resolution_status` は
-  `resolved` / `unresolved`。
+- `markdown_links` は Markdown / Wiki リンクの派生データ。`source_heading` と
+  `source_line` に抽出位置、`resolution_status` に `resolved` / `unresolved` を保存する。
 - `knowledge_links` は人間や AI が明示的に追加した関係。`status` は `proposed` / `confirmed`。
 - `document_metadata` は Markdown に書かれていない DB 独自の情報。
 - 日時は SQLite に native な timestamp 型がないため、Unix ミリ秒の `INTEGER` で保存する。
@@ -515,7 +515,7 @@ UI とプロトコルの層を分離し、どちらからも同じドメイン�
 - Indexer: 追加・更新・削除、内部 ID 維持、frontmatter ID、重複 ID、DB 再構築
 - Reference: Markdown / Wiki リンクの抽出、マウント内の解決
 - Document: ページの読み書き、`content_hash` による楽観的ロック、新規作成
-- Search: 実ファイルの grep、日本語、行番号、前後文脈、件数上限
+- Search: 実ファイルの grep、日本語、文字列 / 正規表現、ファイル名絞り込み、行番号、前後文脈、件数上限
 - MCP: initialize、tools/list、resources/list / read、read / write の stdio 結合テスト
 - Daemon: バックグラウンド起動、Web、MCP HTTP の initialize、停止
 - Web: マウント一覧、ページ表示、検索、Host / Origin 拒否、実サーバーの HTTP 応答

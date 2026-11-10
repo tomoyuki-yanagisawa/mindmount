@@ -29,12 +29,13 @@ pub fn mounts(rows: &[MountRow]) {
         return;
     }
 
-    println!("ID\tNAME\tDOCUMENTS\tDIRECTORY");
+    println!("ID\tNAME\tACTIVE\tDOCUMENTS\tDIRECTORY");
     for row in rows {
         println!(
-            "{}\t{}\t{}\t{}",
+            "{}\t{}\t{}\t{}\t{}",
             row.mount.id,
             row.mount.name,
+            if row.active { "yes" } else { "no" },
             row.documents,
             row.mount.directory_path.display()
         );

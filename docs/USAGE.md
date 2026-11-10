@@ -134,19 +134,23 @@ index 構築に失敗してもマウント登録は残ります。その場合�
 
 ```bash
 mindmount mount list
+mindmount mount list --all
 ```
+
+`--all` は inactive にしたマウントも表示します。
 
 出力:
 
 ```text
-ID	NAME	DOCUMENTS	DIRECTORY
-245510401681731584	Project notes	3	/Users/you/Project/app/notes
+ID	NAME	ACTIVE	DOCUMENTS	DIRECTORY
+245510401681731584	Project notes	yes	3	/Users/you/Project/app/notes
 ```
 
 | 列 | 内容 |
 |---|---|
-| `ID` | マウント ID。`unmount` や `index pages --mount` で使う |
+| `ID` | マウント ID。`mount remove` や `index pages --mount` で使う |
 | `NAME` | 表示名 |
+| `ACTIVE` | 現在有効かどうか |
 | `DOCUMENTS` | index 済みページ数 |
 | `DIRECTORY` | マウント先の canonical path |
 
@@ -243,12 +247,15 @@ DB 独自メタデータと Knowledge Links を操作します。これらは Ma
 ```bash
 mindmount index search '検索したい文字列'
 mindmount index search '設計' --mount 245510401681731584
+mindmount index search '設計.*メモ' --regex --file notes
 ```
 
 マウント先の実ファイルを直接 grep します。索引を使わないため、`index` の更新状況に
 関係なく常に現在のファイル内容を検索できます。
 
-- 検索語は正規表現ではなく文字列として扱い、大文字・小文字を区別しません
+- 既定では検索語を文字列として扱い、大文字・小文字を区別しません
+- `--regex` で正規表現として扱います
+- `--file` で相対パスに含まれる文字列を絞り込めます
 - 結果はファイルパス、行番号、行の内容で表示します
 - 結果は最大 100 件です
 - `--mount` でマウントを絞り込めます
@@ -355,6 +362,25 @@ Resources として `mindmount://<mount-id>/documents/<document-id>` も公開�
 
 デーモンの `/mcp` は `credentials.toml` の `mcp_token` を
 `Authorization: Bearer <token>` で要求します。stdio では認証は不要です。
+
+```bash
+cat ~/.config/mindmount/credentials.toml
+```
+
+MCP クライアントの設定例（形式はクライアントにより異なります）:
+
+```json
+{
+  "mcpServers": {
+    "mindmount": {
+      "url": "http://127.0.0.1:3000/mcp",
+      "headers": {
+        "Authorization": "Bearer <mcp_token>"
+      }
+    }
+  }
+}
+```
 
 書き込み時は index が同期されます。stdio ではログを stdout に出さず stderr に限定します。
 

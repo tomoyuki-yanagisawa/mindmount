@@ -58,6 +58,8 @@ pub async fn search(
     database: &Database,
     query: &str,
     mount_id: Option<i64>,
+    file_name: Option<&str>,
+    regex: bool,
 ) -> Result<Vec<SearchHit>> {
     if query.trim().is_empty() {
         bail!("search query must not be empty");
@@ -73,6 +75,8 @@ pub async fn search(
         SearchOptions {
             query,
             mount_id,
+            file_name,
+            regex,
             limit: SEARCH_LIMIT,
         },
     )?;

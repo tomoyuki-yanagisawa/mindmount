@@ -104,7 +104,7 @@ $XDG_CONFIG_HOME/mindmount/   # 未設定時: ~/.config/mindmount/
 
 Markdown ファイルはマウント先にそのまま残ります。マウントや index 構築で
 既存ファイルを書き換えることはありません。`storage unmount` も Markdown を
-削除せず、設定と派生 index だけを削除します。
+削除せず、マウントを inactive にして DB のメタデータと Knowledge Links を保持します。
 検索は実ファイルを直接 grep するため、SQLite に Markdown の本文は保存されません。
 
 ## ID

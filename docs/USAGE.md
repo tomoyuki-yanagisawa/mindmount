@@ -56,13 +56,17 @@ mindmount -p <PATH> -d <PATH> [-n <NAME>] [--host <HOST>] [--port <PORT>]
 |---|---|
 | `storage mount` | ディレクトリを登録し、index を構築する |
 | `storage list` | 登録済みマウントを一覧表示する |
-| `storage unmount` | マウント登録と派生 index を削除する |
+| `storage unmount` | マウントを inactive にし、DB データを保持する |
 | `index rescan` | 全マウントの index を再構築する |
 | `index watch` | ファイルの変更を監視して index を更新する |
 | `index pages` | index 済みページを一覧表示する |
 | `index search` | index 済み Markdown を文字列で検索する |
 | `index references` | ページからのリンクを一覧表示する |
 | `index backlinks` | ページへのリンクを一覧表示する |
+| `metadata get` | DB 独自メタデータを表示する |
+| `metadata set` | DB 独自メタデータを設定する |
+| `link add` | Knowledge Link を追加する |
+| `link delete` | Knowledge Link を削除する |
 | `serve` | 読み取り専用 Web ビューアを起動する |
 | `mcp` | MCP stdio サーバーを起動する |
 
@@ -198,13 +202,27 @@ mindmount index references <DOCUMENT_ID>
 mindmount index backlinks <DOCUMENT_ID>
 ```
 
-ドキュメント ID は `index pages` で確認できます。Markdown リンクと `[[Wiki リンク]]` を
-対象とし、リンク先は同じマウント内で解決します。Wiki リンクはページ名・タイトル・パスから
+ドキュメント ID は `index pages` で確認できます。Markdown リンクと `[[Wiki リンク]]`、
+DB に保存した Knowledge Links を表示します。リンク先は同じマウント内で解決します。Wiki リンクはページ名・タイトル・パスから
 探し、候補が複数ある場合は未解決として記録します。外部 URL と未解決リンクの `TARGET_ID` は
 `-` です。コードブロック・インラインコード内のリンクは対象外です。
 Markdown リンクではパーセントエンコードされたパスも解決します。`index watch` の実行中は
 編集・移動が自動で反映されます。実行していない場合や、index をアップグレードした場合は
 `index rescan` が必要です。
+
+## metadata / link
+
+```bash
+mindmount metadata get <DOCUMENT_ID>
+mindmount metadata set <DOCUMENT_ID> <KEY> <VALUE_JSON>
+
+mindmount link add <SOURCE_ID> --target <TARGET_ID> --relation depends_on
+mindmount link add <SOURCE_ID> --uri <TARGET_URI> --relation references
+mindmount link delete <LINK_ID>
+```
+
+DB 独自メタデータと Knowledge Links を操作します。これらは Markdown から再生成できない
+永続データです。`index rescan` では削除されません。
 
 ## index search
 
@@ -254,10 +272,13 @@ mindmount storage unmount 245510401681731584
 ```text
 Unmounted "Project notes" (245510401681731584)
 Markdown files were left untouched.
+Index metadata and knowledge links were kept inactive.
 ```
 
 - `config.toml` からマウントを削除する
-- SQLite のマウント、ドキュメント、参照データを削除する
+- SQLite のマウントは `is_active = 0` にして残す
+- 文書、DB メタデータ、Knowledge Links は保持する
+- 同じディレクトリを再登録すると、同じマウント ID で再有効化できる
 - **Markdown ファイルは削除しない**
 
 ## 引数だけのルート実行
@@ -286,7 +307,9 @@ Tools:
 
 - `mounts` / `list` / `search`
 - `read` / `write`
-- `references` / `backlinks`
+- `links` / `backlinks`
+- `metadata_get` / `metadata_set`
+- `link_add` / `link_delete`
 
 `read` は `document_id` または `mount_id` + `path` を受け付けます。`write` も同じ指定方法で、
 既存ページの更新には `read` が返した `content_hash` を `expected_hash` として渡します。

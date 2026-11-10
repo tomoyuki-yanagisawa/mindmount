@@ -135,7 +135,7 @@ index rescan / index watch / storage mount
 
 - 追加: DB に存在しない相対パス
 - 更新: 相対パスは存在するが `content_hash` が違う
-- 削除: 走査結果に存在しない相対パス
+- missing: 走査結果に存在しない相対パス。行は削除せず `missing_at` を記録する
 - 変更なし: `content_hash` が同じ
 - Markdown 解析の変更に伴う migration は、既存のハッシュを無効化して次回 rescan でタイトルを更新する
 
@@ -165,15 +165,18 @@ index pages
 
 | データ | 正本 |
 |---|---|
-| Markdown 本文、リンク、タグ、タイトル | マウント先のファイル |
+| Markdown 本文、Markdown リンク、タグ、タイトル | マウント先のファイル |
 | マウント設定 | `config.toml` |
-| index、content_hash、バックリンク | SQLite（派生） |
+| Mindmount 独自メタデータ、Knowledge Links、文書 ID とパスの対応 | SQLite（正本） |
+| index、content_hash、Markdown リンクの解決状態、バックリンク | SQLite（派生） |
 
 `config.toml` がマウント設定の正本です。SQLite の `mounts` テーブルは
-コマンド実行時に `config.toml` から同期され、設定から消えたマウントは削除されます。
+コマンド実行時に `config.toml` から同期されます。設定から消えたマウントは
+削除せず `is_active = 0` にし、文書・メタデータ・Knowledge Links を保持します。
+同じディレクトリを再登録すると、同じマウント ID で再有効化できます。
 
-SQLite を削除しても、`index rescan` で index を再構築できます。
-ただし frontmatter に `id` がないドキュメントの内部 ID は再生成されます。
+DB 独自のメタデータと Knowledge Links は再生成できません。`index rescan` で作り直せるのは
+派生 index だけです。ファイルが消えた文書も削除せず `missing_at` を記録し、孤立した文書を許容します。
 
 ### 5.2 SQLite スキーマ
 
@@ -183,6 +186,7 @@ CREATE TABLE mounts (
     name TEXT NOT NULL,
     project_path TEXT NOT NULL,
     directory_path TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
     created_at INTEGER NOT NULL
 );
 
@@ -196,19 +200,61 @@ CREATE TABLE documents (
     content_hash TEXT NOT NULL,
     modified_at INTEGER NOT NULL,
     indexed_at INTEGER NOT NULL,
+    missing_at INTEGER,
     UNIQUE (mount_id, relative_path),
     FOREIGN KEY (mount_id) REFERENCES mounts (id)
         ON DELETE CASCADE ON UPDATE CASCADE
 );
+
+CREATE TABLE document_metadata (
+    document_id INTEGER NOT NULL,
+    key TEXT NOT NULL,
+    value_json TEXT NOT NULL,
+    updated_at INTEGER NOT NULL,
+    updated_by TEXT NOT NULL,
+    PRIMARY KEY (document_id, key)
+);
+
+CREATE TABLE markdown_links (
+    id INTEGER PRIMARY KEY NOT NULL,
+    source_document_id INTEGER NOT NULL,
+    target_document_id INTEGER,
+    target_uri TEXT,
+    target_anchor TEXT,
+    raw_reference TEXT NOT NULL,
+    source_heading TEXT,
+    source_line INTEGER,
+    resolution_status TEXT NOT NULL,
+    source_kind TEXT NOT NULL
+);
+
+CREATE TABLE knowledge_links (
+    id INTEGER PRIMARY KEY NOT NULL,
+    source_document_id INTEGER NOT NULL,
+    target_document_id INTEGER,
+    target_uri TEXT,
+    relation_type TEXT NOT NULL,
+    description TEXT,
+    provenance TEXT,
+    created_by TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'proposed',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
 ```
 
-- `references` テーブルに抽出したリンクと解決先を保存する。
+- `markdown_links` は Markdown / Wiki リンクの派生データ。`resolution_status` は
+  `resolved` / `unresolved`。
+- `knowledge_links` は人間や AI が明示的に追加した関係。`status` は `proposed` / `confirmed`。
+- `document_metadata` は Markdown に書かれていない DB 独自の情報。
 - 日時は SQLite に native な timestamp 型がないため、Unix ミリ秒の `INTEGER` で保存する。
 - `mounts.directory_path` は canonical path を保存する。
 - `documents.relative_path` はマウント先からの `/` 区切り相対パス。
 - `(mount_id, relative_path)` に一意制約を置く。
 - `documents.id` は主キー。frontmatter の `id` または内部 Snowflake ID。
 - 外部キーは有効化し、WAL と 5 秒の busy timeout を使う。
+- 通常の同期では文書行を削除しない。削除されたファイルは `missing_at`、解除されたマウントは
+  `is_active = 0` で保持する。
 
 ### 5.3 トランザクション
 
@@ -373,7 +419,7 @@ Phase 4 以降は Web ビューアも起動する予定です。
 ローカル版の Web UI は **viewer** です。`mindmount serve` で起動します。
 
 - `GET /`、`GET /mounts`、`GET /page/{id}`、`GET /search`、`GET /static/style.css`
-- マウント一覧、Markdown 表示、検索、参照先、バックリンク
+- マウント一覧、Markdown 表示、検索、Markdown リンク、Knowledge Links、バックリンク、DB メタデータ
 - Markdown 内の解決済みリンクと Wiki リンクは `/page/{id}` に変換
 - 編集画面、`GET /page/{id}/edit`、`POST /page/{id}` は持たない
 - 人間は vim などでファイルを直接編集し、`index rescan` で反映する
@@ -399,8 +445,12 @@ Tools:
 - `search`
 - `read`
 - `write`
-- `references`
+- `links`
 - `backlinks`
+- `metadata_get`
+- `metadata_set`
+- `link_add`
+- `link_delete`
 
 Resources:
 
@@ -503,7 +553,8 @@ cargo fmt --all -- --check
 - ローカル Web UI は閲覧専用（編集機能なし）
 - 複数プロセス間の index 更新は完全には直列化していない
 - Snowflake のノード ID 衝突を跨端末で完全には防げない
-- DB 再構築時の内部 ID 永続性は保証しない
+- DB を削除すると、DB 独自メタデータ・Knowledge Links・内部 ID の対応は失われる
+- ファイルが消えた文書は `missing_at` で保持し、孤立した文書を許容する
 - 非 UTF-8 のファイル名・内容はスキップする
 - symlink された Markdown は対象外
 

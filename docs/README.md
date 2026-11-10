@@ -28,7 +28,7 @@ Mindmount はローカルファーストの OSS プロジェクトです。自�
 - Markdown の走査、タイトル抽出、内容ハッシュ、差分反映
 - `index rescan` による再インデックス
 - `index pages` によるページ一覧
-- `index search` による全文検索
+- `index search` による実ファイルの grep 検索
 - `index references` / `index backlinks` による参照一覧
 - `index watch` によるファイル監視と自動再走査
 - MCP stdio サーバー（`mounts` / `list` / `search` / `read` / `write` / `references` / `backlinks`）

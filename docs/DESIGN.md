@@ -28,7 +28,7 @@ Mindmount は、自分のメモリを AI と共有するためのローカルサ
 - Markdown の走査、タイトル・ID 抽出、変更検出
 - index の差分更新と再構築
 - ページ一覧
-- FTS5 trigram による全文検索
+- 実ファイルへの grep 検索（本文 index なし）
 - Markdown リンク・Wiki リンクの参照とバックリンク
 - `index watch` によるファイル監視
 - MCP stdio サーバー（Tools / Resources）
@@ -87,7 +87,7 @@ web/ は cli/ / mcp/ と同じ階層で、usecase/ を呼ぶ。
 | `storage/filesystem.rs` | `MountRoot`、パス検証、読み取り、atomic write、走査 |
 | `db/mod.rs` | 接続、migration、`Database` と共通エラー |
 | `db/mounts.rs` | マウント登録の同期 |
-| `db/queries.rs` | ドキュメント、FTS5 検索、参照・バックリンクの読み取り |
+| `db/queries.rs` | ドキュメント、参照・バックリンクの読み取り |
 | `db/sync.rs` | 変更ファイルと影響範囲の index を 1 トランザクションで適用 |
 | `index/indexer.rs` | 走査、差分計算、参照解決、全マウント同期 |
 | `index/watch.rs` | ファイル監視と再走査 |
@@ -226,14 +226,14 @@ CREATE TABLE documents (
 
 | ビット | 内容 |
 |---|---|
-| 41bit | カスタムエポックからのミリ秒 |
+| 41bit | Unix エポックからのミリ秒 |
 | 10bit | ノード ID |
 | 12bit | 同一ミリ秒内の連番 |
 
-カスタムエポック:
+エポック:
 
 ```text
-2025-01-01T00:00:00Z = 1735689600000 ms
+1970-01-01T00:00:00Z = 0 ms
 ```
 
 エポックは一度決めたら変更しません。
@@ -452,6 +452,7 @@ UI とプロトコルの層を分離し、どちらからも同じドメイン�
 - Indexer: 追加・更新・削除、内部 ID 維持、frontmatter ID、重複 ID、DB 再構築
 - Reference: Markdown / Wiki リンクの抽出、マウント内の解決
 - Document: ページの読み書き、`content_hash` による楽観的ロック、新規作成
+- Search: 実ファイルの grep、日本語、行番号、前後文脈、件数上限
 - MCP: initialize、tools/list、resources/list / read、read / write の stdio 結合テスト
 - Web: マウント一覧、ページ表示、検索、Host / Origin 拒否、実サーバーの HTTP 応答
 
@@ -495,7 +496,7 @@ cargo fmt --all -- --check
 - `index rescan` は毎回全ファイルを走査する（ローカル MVP では許容）
 - index は Markdown より遅れて更新され得る。監視と 30 秒ごとの再走査で最終的に整合する
 - frontmatter は簡易 YAML パーサ
-- 日本語の部分文字列検索に trigram を使用する。1〜2 文字の検索は走査する
+- 検索は実ファイルへの grep。結果は行単位で、履歴 index は持たない
 - Wiki リンクの解決はマウント内に限定し、同名候補が複数ある場合は未解決とする
 - MCP は stdio transport のみ
 - Web は閲覧専用で、検索はサーバー描画（部分更新なし）
@@ -508,7 +509,6 @@ cargo fmt --all -- --check
 
 ### 未解決事項
 
-- 日本語検索に trigram と unicode61 のどちらを使うか
 - Wiki リンクの同名ページ・曖昧性の解決規則
 - frontmatter ID の移行と衝突解決
 - 設定を `XDG_CONFIG_HOME` から `XDG_DATA_HOME` へ移す時期

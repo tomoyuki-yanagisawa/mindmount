@@ -6,11 +6,12 @@ use std::path::PathBuf;
 
 use anyhow::{bail, Result};
 use clap::{Args, CommandFactory, Parser, Subcommand};
+use serde_json::Value;
 
 use crate::config::{AppPaths, Config};
 use crate::core::id::Snowflake;
 use crate::db::Database;
-use crate::usecase::{index as index_ops, mount};
+use crate::usecase::{index as index_ops, knowledge, mount};
 
 /// Local-first Markdown knowledge server for humans and AI.
 #[derive(Debug, Parser)]
@@ -39,10 +40,54 @@ pub enum Command {
         #[command(subcommand)]
         command: IndexCommand,
     },
+    /// Manage DB-owned metadata.
+    Metadata {
+        #[command(subcommand)]
+        command: MetadataCommand,
+    },
+    /// Manage Knowledge Links.
+    Link {
+        #[command(subcommand)]
+        command: LinkCommand,
+    },
     /// Start the read-only web viewer.
     Serve(ServerOptions),
     /// Start the MCP stdio server.
     Mcp,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum MetadataCommand {
+    /// Show metadata for a page.
+    Get { document_id: i64 },
+    /// Set a metadata value. VALUE is parsed as JSON, or stored as a string.
+    Set {
+        document_id: i64,
+        key: String,
+        value: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+pub enum LinkCommand {
+    /// Add a Knowledge Link.
+    Add {
+        source_document_id: i64,
+        #[arg(long)]
+        target: Option<i64>,
+        #[arg(long)]
+        uri: Option<String>,
+        #[arg(long, default_value = "related_to")]
+        relation: String,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long)]
+        provenance: Option<String>,
+        #[arg(long, default_value = "proposed")]
+        status: String,
+    },
+    /// Delete a Knowledge Link by id.
+    Delete { link_id: i64 },
 }
 
 #[derive(Debug, Subcommand)]
@@ -229,6 +274,53 @@ pub async fn run(cli: Cli) -> Result<()> {
             IndexCommand::Backlinks { document_id } => {
                 let links = index_ops::links(&config, &database, document_id, true).await?;
                 output::links(&links);
+            }
+        },
+        Some(Command::Metadata { command }) => match command {
+            MetadataCommand::Get { document_id } => {
+                let entries = knowledge::metadata(&database, document_id).await?;
+                output::metadata(&entries);
+            }
+            MetadataCommand::Set {
+                document_id,
+                key,
+                value,
+            } => {
+                let value: Value = serde_json::from_str(&value).unwrap_or(Value::String(value));
+                knowledge::set_metadata(&database, document_id, &key, &value, "cli").await?;
+                println!("Updated metadata \"{key}\" for page {document_id}");
+            }
+        },
+        Some(Command::Link { command }) => match command {
+            LinkCommand::Add {
+                source_document_id,
+                target,
+                uri,
+                relation,
+                description,
+                provenance,
+                status,
+            } => {
+                let id = knowledge::add_link(
+                    &database,
+                    source_document_id,
+                    target,
+                    uri.as_deref(),
+                    &relation,
+                    description.as_deref(),
+                    provenance.as_deref(),
+                    "cli",
+                    &status,
+                )
+                .await?;
+                println!("Added knowledge link {id}");
+            }
+            LinkCommand::Delete { link_id } => {
+                let deleted = knowledge::delete_link(&database, link_id).await?;
+                println!(
+                    "{} knowledge link {link_id}",
+                    if deleted { "Deleted" } else { "No such" }
+                );
             }
         },
         Some(Command::Serve(_)) => unreachable!("serve is handled before acquiring the lock"),

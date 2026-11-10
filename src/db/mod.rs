@@ -135,6 +135,7 @@ mod tests {
                     anchor: item.anchor,
                     raw: item.raw,
                     kind: item.kind,
+                    line: item.line,
                 });
             }
         }
@@ -161,7 +162,9 @@ mod tests {
 
         assert!(names.contains(&"mounts".to_string()));
         assert!(names.contains(&"documents".to_string()));
-        assert!(names.contains(&"references".to_string()));
+        assert!(names.contains(&"markdown_links".to_string()));
+        assert!(names.contains(&"knowledge_links".to_string()));
+        assert!(names.contains(&"document_metadata".to_string()));
     }
 
     #[tokio::test]
@@ -197,7 +200,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn sync_mounts_prunes_stale_rows_and_cascades_documents() {
+    async fn sync_mounts_marks_removed_mounts_inactive() {
         let temp = tempdir().unwrap();
         let database = Database::open(&temp.path().join("test.sqlite"))
             .await
@@ -228,14 +231,20 @@ mod tests {
             .await
             .unwrap()
             .get("count");
+        let active: i64 = sqlx::query("SELECT COUNT(*) AS count FROM mounts WHERE is_active = 1")
+            .fetch_one(&database.pool)
+            .await
+            .unwrap()
+            .get("count");
         let documents: i64 = sqlx::query("SELECT COUNT(*) AS count FROM documents")
             .fetch_one(&database.pool)
             .await
             .unwrap()
             .get("count");
 
-        assert_eq!(mounts, 1);
-        assert_eq!(documents, 0);
+        assert_eq!(mounts, 2);
+        assert_eq!(active, 1);
+        assert_eq!(documents, 1);
     }
 
     #[tokio::test]
@@ -272,7 +281,7 @@ mod tests {
         .await;
 
         let count: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM \"references\" WHERE source_document_id = 10")
+            sqlx::query_scalar("SELECT COUNT(*) FROM markdown_links WHERE source_document_id = 10")
                 .fetch_one(&database.pool)
                 .await
                 .unwrap();
@@ -316,7 +325,161 @@ mod tests {
             &HashMap::new(),
         )
         .await;
-        assert!(database.documents_for_mount(1).await.unwrap().is_empty());
+        assert!(database.list_documents(Some(1)).await.unwrap().is_empty());
+        assert_eq!(database.documents_for_mount(1).await.unwrap().len(), 1);
+        assert!(database.missing_paths(1).await.unwrap().contains("page.md"));
+    }
+
+    #[tokio::test]
+    async fn metadata_round_trips() {
+        let temp = tempdir().unwrap();
+        let database = Database::open(&temp.path().join("test.sqlite"))
+            .await
+            .unwrap();
+        database
+            .sync_mounts(&[mount(1, &temp.path().join("project/notes"))])
+            .await
+            .unwrap();
+        let document = document(10, 1, "page.md", "Page", "hash");
+        let bodies = HashMap::from([(10, "# Page\n".to_string())]);
+        apply(
+            &database,
+            1,
+            std::slice::from_ref(&document),
+            std::slice::from_ref(&document),
+            &[],
+            &bodies,
+        )
+        .await;
+
+        database
+            .set_metadata(10, "source", "\"ai\"", "mcp")
+            .await
+            .unwrap();
+        database
+            .set_metadata(10, "source", "\"human\"", "human")
+            .await
+            .unwrap();
+        let entries = database.metadata(10).await.unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].key, "source");
+        assert_eq!(entries[0].value_json, "\"human\"");
+        assert_eq!(entries[0].updated_by, "human");
+    }
+
+    #[tokio::test]
+    async fn knowledge_links_round_trip() {
+        let temp = tempdir().unwrap();
+        let database = Database::open(&temp.path().join("test.sqlite"))
+            .await
+            .unwrap();
+        database
+            .sync_mounts(&[mount(1, &temp.path().join("project/notes"))])
+            .await
+            .unwrap();
+        let document = document(10, 1, "page.md", "Page", "hash");
+        let bodies = HashMap::from([(10, "# Page\n".to_string())]);
+        apply(
+            &database,
+            1,
+            std::slice::from_ref(&document),
+            std::slice::from_ref(&document),
+            &[],
+            &bodies,
+        )
+        .await;
+
+        let id = database
+            .add_knowledge_link(
+                10,
+                Some(10),
+                None,
+                "related_to",
+                Some("self"),
+                Some("test"),
+                "human",
+                "confirmed",
+            )
+            .await
+            .unwrap();
+        let links = database.links(10, false).await.unwrap();
+        assert!(links.iter().any(|link| {
+            link.origin == "knowledge" && link.kind == "related_to" && link.target_id == Some(10)
+        }));
+        assert!(database.delete_knowledge_link(id).await.unwrap());
+        assert!(!database.delete_knowledge_link(id).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn missing_documents_are_preserved_and_restored() {
+        let temp = tempdir().unwrap();
+        let database = Database::open(&temp.path().join("test.sqlite"))
+            .await
+            .unwrap();
+        database
+            .sync_mounts(&[mount(1, &temp.path().join("project/notes"))])
+            .await
+            .unwrap();
+        let document = document(10, 1, "page.md", "Page", "hash");
+        let bodies = HashMap::from([(10, "# Page\n".to_string())]);
+        apply(
+            &database,
+            1,
+            std::slice::from_ref(&document),
+            std::slice::from_ref(&document),
+            &[],
+            &bodies,
+        )
+        .await;
+
+        apply(&database, 1, &[], &[], &["page.md".into()], &HashMap::new()).await;
+        assert!(database.missing_paths(1).await.unwrap().contains("page.md"));
+        assert!(database.list_documents(Some(1)).await.unwrap().is_empty());
+        assert_eq!(database.documents_for_mount(1).await.unwrap().len(), 1);
+
+        apply(
+            &database,
+            1,
+            std::slice::from_ref(&document),
+            std::slice::from_ref(&document),
+            &[],
+            &bodies,
+        )
+        .await;
+        assert!(database.missing_paths(1).await.unwrap().is_empty());
+        assert_eq!(database.list_documents(Some(1)).await.unwrap()[0].id, 10);
+    }
+
+    #[tokio::test]
+    async fn inactive_mounts_can_be_restored() {
+        let temp = tempdir().unwrap();
+        let database = Database::open(&temp.path().join("test.sqlite"))
+            .await
+            .unwrap();
+        let mount = mount(1, &temp.path().join("project/notes"));
+        let directory = mount.directory_path.to_string_lossy().into_owned();
+
+        database
+            .sync_mounts(std::slice::from_ref(&mount))
+            .await
+            .unwrap();
+        database.sync_mounts(&[]).await.unwrap();
+        let inactive = database
+            .inactive_mount_by_directory(&directory)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(inactive.id, 1);
+
+        database
+            .sync_mounts(std::slice::from_ref(&mount))
+            .await
+            .unwrap();
+        assert!(database
+            .inactive_mount_by_directory(&directory)
+            .await
+            .unwrap()
+            .is_none());
     }
 
     #[tokio::test]
@@ -352,7 +515,7 @@ mod tests {
         apply(&database, 1, &documents, &[target], &[], &bodies).await;
 
         let target_id: Option<i64> = sqlx::query_scalar(
-            "SELECT target_document_id FROM \"references\" WHERE source_document_id = 10",
+            "SELECT target_document_id FROM markdown_links WHERE source_document_id = 10",
         )
         .fetch_one(&database.pool)
         .await

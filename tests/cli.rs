@@ -377,7 +377,10 @@ fn references_and_backlinks_follow_rescans() {
     assert_success(&env.run(&["index", "rescan"]));
     let links = stdout(&env.run(&["index", "references", "100"]));
     assert!(links.contains("-\t./target.md#heading"), "{links}");
-    assert_failure(&env.run(&["index", "backlinks", "200"]));
+    let backlinks = env.run(&["index", "backlinks", "200"]);
+    assert_success(&backlinks);
+    assert!(stdout(&backlinks).contains("No links found."));
+    assert!(!stdout(&env.run(&["index", "pages"])).contains("\ttarget.md\t"));
 }
 
 #[test]
@@ -729,6 +732,52 @@ fn serve_starts_and_serves_mounts() {
 }
 
 #[test]
+fn metadata_and_knowledge_links_round_trip() {
+    let env = TestEnv::new();
+    fs::write(env.notes.join("index.md"), "---\nid: 100\n---\n# Index\n").unwrap();
+    fs::write(env.notes.join("target.md"), "---\nid: 200\n---\n# Target\n").unwrap();
+    assert_success(&env.mount("Notes"));
+
+    let set = env.run(&["metadata", "set", "100", "owner", "\"me\""]);
+    assert_success(&set);
+    let metadata = env.run(&["metadata", "get", "100"]);
+    assert_success(&metadata);
+    assert!(stdout(&metadata).contains("owner"), "{}", stdout(&metadata));
+    assert!(
+        stdout(&metadata).contains("\"me\""),
+        "{}",
+        stdout(&metadata)
+    );
+
+    let add = env.run(&[
+        "link",
+        "add",
+        "100",
+        "--target",
+        "200",
+        "--relation",
+        "depends_on",
+        "--status",
+        "confirmed",
+    ]);
+    assert_success(&add);
+    let link_id = stdout(&add).split_whitespace().last().unwrap().to_string();
+    let links = env.run(&["index", "references", "100"]);
+    assert_success(&links);
+    assert!(
+        stdout(&links).contains("200\t\tdepends_on"),
+        "{}",
+        stdout(&links)
+    );
+
+    let delete = env.run(&["link", "delete", &link_id]);
+    assert_success(&delete);
+    assert!(stdout(&delete).contains("Deleted"));
+    let links = env.run(&["index", "references", "100"]);
+    assert!(!stdout(&links).contains("depends_on"));
+}
+
+#[test]
 fn mcp_lists_tools_and_reads_a_page() {
     let env = TestEnv::new();
     assert_success(&env.mount("Notes"));
@@ -789,8 +838,12 @@ fn mcp_lists_tools_and_reads_a_page() {
         "search",
         "read",
         "write",
-        "references",
+        "links",
         "backlinks",
+        "metadata_get",
+        "metadata_set",
+        "link_add",
+        "link_delete",
     ] {
         assert!(names.contains(&expected), "missing {expected}: {names:?}");
     }

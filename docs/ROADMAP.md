@@ -35,7 +35,7 @@ Web UI での編集は提供しません。
   - atomic write
   - SQLite への同期
 - SQLite
-  - `mounts` / `documents` / `references` の migration
+  - `mounts` / `documents` / `markdown_links` / `knowledge_links` / `document_metadata` の migration
   - WAL、外部キー、busy timeout
 - Snowflake ID
   - 41bit 時刻 + 10bit ノード + 12bit 連番
@@ -87,8 +87,10 @@ Web UI での編集は提供しません。
   - 行番号・前後文脈・件数上限
 - Markdown リンク・Wiki リンクの抽出と外部 URL の記録（実装済み）
 - マウント内のリンク解決、曖昧・未解決リンクの記録（実装済み）
-- `references` テーブルとバックリンク（実装済み）
+- `markdown_links` / `knowledge_links` / `document_metadata`（実装済み）
+- バックリンクと Knowledge Links の表示（実装済み）
 - 変更ファイルと影響する参照だけを差分更新（実装済み。全体再構築は `index rescan`）
+- マウント解除は inactive、ファイル消失は missing として保持（実装済み）
 - `index search`、`index references`、`index backlinks`（実装済み）
 - パーセントエンコードされた Markdown リンク先の解決（実装済み）
 
@@ -118,8 +120,12 @@ AI が同じ Markdown を読み書きできるようにする。
   - `read`
   - `write`
   - `list`
-  - `references`
+  - `links`
   - `backlinks`
+  - `metadata_get`
+  - `metadata_set`
+  - `link_add`
+  - `link_delete`
 - Resources（実装済み）
   - `mindmount://<mount-id>/documents/<document-id>`
 - `write` の楽観的ロック（実装済み）

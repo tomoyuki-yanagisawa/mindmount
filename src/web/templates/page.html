@@ -34,4 +34,47 @@
   </ul>
   {% endif %}
 </section>
+
+<section>
+  <h2>Knowledge Links</h2>
+  {% if knowledge_references.len() == 0 %}
+  <p class="muted">なし</p>
+  {% else %}
+  <ul>
+    {% for link in knowledge_references %}
+    <li>
+      {% if link.linked %}<a href="{{ link.url }}">{{ link.label }}</a>{% else %}{{ link.label }}{% endif %}
+      <span class="kind">{{ link.kind }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+
+<section>
+  <h2>Knowledge Backlinks</h2>
+  {% if knowledge_backlinks.len() == 0 %}
+  <p class="muted">なし</p>
+  {% else %}
+  <ul>
+    {% for link in knowledge_backlinks %}
+    <li><a href="{{ link.url }}">{{ link.label }}</a> <span class="kind">{{ link.kind }}</span></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+
+<section>
+  <h2>メタデータ</h2>
+  {% if metadata.len() == 0 %}
+  <p class="muted">なし</p>
+  {% else %}
+  <dl>
+    {% for item in metadata %}
+    <dt>{{ item.key }}</dt>
+    <dd><code>{{ item.value }}</code></dd>
+    {% endfor %}
+  </dl>
+  {% endif %}
+</section>
 {% endblock %}

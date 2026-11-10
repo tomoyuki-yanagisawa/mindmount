@@ -23,7 +23,7 @@ pub struct SyncReport {
     pub scanned: usize,
     pub added: usize,
     pub updated: usize,
-    pub removed: usize,
+    pub missing: usize,
     pub unchanged: usize,
     pub errors: usize,
 }
@@ -31,8 +31,8 @@ pub struct SyncReport {
 impl SyncReport {
     pub fn summary(&self) -> String {
         format!(
-            "{} files, {} added, {} updated, {} removed, {} unchanged, {} errors",
-            self.scanned, self.added, self.updated, self.removed, self.unchanged, self.errors
+            "{} files, {} added, {} updated, {} missing, {} unchanged, {} errors",
+            self.scanned, self.added, self.updated, self.missing, self.unchanged, self.errors
         )
     }
 }
@@ -175,12 +175,13 @@ pub async fn sync_mount(
         upserts.push(document);
     }
 
-    let deletes: Vec<String> = existing
+    let already_missing = database.missing_paths(mount_id).await?;
+    let missing: Vec<String> = existing
         .keys()
-        .filter(|path| !scanned_paths.contains(*path))
+        .filter(|path| !scanned_paths.contains(*path) && !already_missing.contains(*path))
         .cloned()
         .collect();
-    report.removed = deletes.len();
+    report.missing = missing.len();
 
     // Catch duplicate frontmatter IDs before touching the database so the
     // whole mount stays consistent.
@@ -197,14 +198,14 @@ pub async fn sync_mount(
     }
 
     // Nothing changed, so the stored references are already current.
-    let (references, affected) = if upserts.is_empty() && deletes.is_empty() {
+    let (references, affected) = if upserts.is_empty() && missing.is_empty() {
         (Vec::new(), Vec::new())
     } else {
         let changed: HashSet<i64> = upserts.iter().map(|document| document.id).collect();
         resolved_changes(&documents, &previous_documents, &bodies, &changed)
     };
     database
-        .apply_mount_sync(mount_id, &upserts, &deletes, &references, &affected)
+        .apply_mount_sync(mount_id, &upserts, &missing, &references, &affected)
         .await?;
 
     Ok(report)
@@ -261,6 +262,7 @@ fn resolved_changes(
                     anchor: reference.anchor,
                     raw: reference.raw,
                     kind: reference.kind,
+                    line: reference.line,
                 }),
         );
     }
@@ -349,7 +351,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn adds_updates_and_deletes_documents_while_preserving_internal_ids() {
+    async fn adds_updates_and_marks_missing_documents_while_preserving_ids() {
         let mut fixture = fixture().await;
         fs::write(fixture.notes.join("index.md"), "# Index\n").unwrap();
         fs::write(fixture.notes.join("old.md"), "# Old\n").unwrap();
@@ -374,11 +376,20 @@ mod tests {
         assert_eq!(report.scanned, 2);
         assert_eq!(report.added, 1);
         assert_eq!(report.updated, 1);
-        assert_eq!(report.removed, 1);
+        assert_eq!(report.missing, 1);
         assert_eq!(report.unchanged, 0);
 
         let after = fixture.database.documents_for_mount(1).await.unwrap();
-        assert_eq!(after.len(), 2);
+        assert_eq!(after.len(), 3);
+        assert_eq!(
+            fixture
+                .database
+                .list_documents(Some(1))
+                .await
+                .unwrap()
+                .len(),
+            2
+        );
         let index = after
             .iter()
             .find(|document| document.relative_path == "index.md")
@@ -389,7 +400,7 @@ mod tests {
         let report = fixture.sync().await.unwrap();
         assert_eq!(report.scanned, 2);
         assert_eq!(report.unchanged, 2);
-        assert_eq!(report.added + report.updated + report.removed, 0);
+        assert_eq!(report.added + report.updated + report.missing, 0);
     }
 
     #[tokio::test]
@@ -446,9 +457,13 @@ mod tests {
         fs::rename(fixture.notes.join("old.md"), fixture.notes.join("new.md")).unwrap();
         fixture.sync().await.unwrap();
         let documents = fixture.database.documents_for_mount(1).await.unwrap();
-        assert_eq!(documents.len(), 1);
+        assert_eq!(documents.len(), 2);
+        let moved = documents.iter().find(|document| document.id == 42).unwrap();
+        assert_eq!(moved.relative_path, "new.md");
+        let visible = fixture.database.list_documents(Some(1)).await.unwrap();
+        assert_eq!(visible.len(), 1);
         assert_eq!(
-            (documents[0].id, documents[0].relative_path.as_str()),
+            (visible[0].id, visible[0].relative_path.as_str()),
             (42, "new.md")
         );
     }

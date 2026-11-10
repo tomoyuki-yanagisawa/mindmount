@@ -29,7 +29,7 @@ use crate::db::queries::LinkRow;
 use crate::db::Database;
 use crate::usecase::{
     document::{self, DocumentTarget},
-    index as index_ops,
+    index as index_ops, knowledge,
 };
 
 #[derive(Clone)]
@@ -115,6 +115,48 @@ struct WriteArgs {
 struct LinksArgs {
     #[schemars(description = "Indexed document id.")]
     document_id: i64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct MetadataGetArgs {
+    #[schemars(description = "Indexed document id.")]
+    document_id: i64,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct MetadataSetArgs {
+    #[schemars(description = "Indexed document id.")]
+    document_id: i64,
+    #[schemars(description = "Metadata key.")]
+    key: String,
+    #[schemars(description = "Metadata value as JSON.")]
+    value: Value,
+    #[schemars(description = "Author of the update. Defaults to mcp.")]
+    updated_by: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct LinkAddArgs {
+    #[schemars(description = "Source document id.")]
+    source_document_id: i64,
+    #[schemars(description = "Target document id, when known.")]
+    target_document_id: Option<i64>,
+    #[schemars(description = "Target URI when the target document is not indexed.")]
+    target_uri: Option<String>,
+    #[schemars(description = "references, related_to, depends_on, derived_from, or supersedes.")]
+    relation_type: String,
+    #[schemars(description = "Optional human-readable description.")]
+    description: Option<String>,
+    #[schemars(description = "Optional provenance for the relation.")]
+    provenance: Option<String>,
+    #[schemars(description = "proposed or confirmed. Defaults to proposed.")]
+    status: Option<String>,
+}
+
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+struct LinkDeleteArgs {
+    #[schemars(description = "Knowledge link id.")]
+    link_id: i64,
 }
 
 impl ReadArgs {
@@ -238,7 +280,7 @@ impl Mindmount {
     }
 
     #[tool(description = "List links from a page.")]
-    async fn references(
+    async fn links(
         &self,
         Parameters(args): Parameters<LinksArgs>,
     ) -> Result<Json<Value>, ErrorData> {
@@ -259,6 +301,75 @@ impl Mindmount {
             .await
             .map_err(internal)?;
         Ok(Json(json!(links.iter().map(link_json).collect::<Vec<_>>())))
+    }
+
+    #[tool(description = "Get DB-owned metadata for a page.")]
+    async fn metadata_get(
+        &self,
+        Parameters(args): Parameters<MetadataGetArgs>,
+    ) -> Result<Json<Value>, ErrorData> {
+        let entries = knowledge::metadata(self.database(), args.document_id)
+            .await
+            .map_err(internal)?;
+        Ok(Json(json!(entries
+            .iter()
+            .map(|entry| json!({
+                "key": entry.key,
+                "value": serde_json::from_str::<Value>(&entry.value_json)
+                    .unwrap_or_else(|_| Value::String(entry.value_json.clone())),
+                "updated_by": entry.updated_by,
+                "updated_at": entry.updated_at.to_rfc3339(),
+            }))
+            .collect::<Vec<_>>())))
+    }
+
+    #[tool(description = "Set a DB-owned metadata value for a page.")]
+    async fn metadata_set(
+        &self,
+        Parameters(args): Parameters<MetadataSetArgs>,
+    ) -> Result<Json<Value>, ErrorData> {
+        knowledge::set_metadata(
+            self.database(),
+            args.document_id,
+            &args.key,
+            &args.value,
+            args.updated_by.as_deref().unwrap_or("mcp"),
+        )
+        .await
+        .map_err(internal)?;
+        Ok(Json(json!({ "ok": true })))
+    }
+
+    #[tool(description = "Add a Knowledge Link between pages.")]
+    async fn link_add(
+        &self,
+        Parameters(args): Parameters<LinkAddArgs>,
+    ) -> Result<Json<Value>, ErrorData> {
+        let id = knowledge::add_link(
+            self.database(),
+            args.source_document_id,
+            args.target_document_id,
+            args.target_uri.as_deref(),
+            &args.relation_type,
+            args.description.as_deref(),
+            args.provenance.as_deref(),
+            "mcp",
+            args.status.as_deref().unwrap_or("proposed"),
+        )
+        .await
+        .map_err(internal)?;
+        Ok(Json(json!({ "id": id })))
+    }
+
+    #[tool(description = "Delete a Knowledge Link by id.")]
+    async fn link_delete(
+        &self,
+        Parameters(args): Parameters<LinkDeleteArgs>,
+    ) -> Result<Json<Value>, ErrorData> {
+        let deleted = knowledge::delete_link(self.database(), args.link_id)
+            .await
+            .map_err(internal)?;
+        Ok(Json(json!({ "deleted": deleted })))
     }
 }
 
@@ -370,6 +481,7 @@ fn link_json(link: &LinkRow) -> Value {
         "target": link.target,
         "anchor": link.anchor,
         "kind": link.kind,
+        "origin": link.origin,
     })
 }
 

@@ -132,6 +132,11 @@ struct LinkView {
     kind: String,
 }
 
+struct MetadataView {
+    key: String,
+    value: String,
+}
+
 #[derive(Template)]
 #[template(path = "page.html")]
 struct PageTemplate {
@@ -141,6 +146,9 @@ struct PageTemplate {
     content: String,
     references: Vec<LinkView>,
     backlinks: Vec<LinkView>,
+    knowledge_references: Vec<LinkView>,
+    knowledge_backlinks: Vec<LinkView>,
+    metadata: Vec<MetadataView>,
 }
 
 struct MountOption {
@@ -202,7 +210,39 @@ async fn page(
         .links(id, true)
         .await
         .map_err(AppError::internal)?;
-    let content = render_markdown(&read.content, &references);
+    let markdown_references: Vec<LinkRow> = references
+        .iter()
+        .filter(|link| link.origin == "markdown")
+        .cloned()
+        .collect();
+    let knowledge_references: Vec<LinkRow> = references
+        .iter()
+        .filter(|link| link.origin == "knowledge")
+        .cloned()
+        .collect();
+    let markdown_backlinks: Vec<LinkRow> = backlinks
+        .iter()
+        .filter(|link| link.origin == "markdown")
+        .cloned()
+        .collect();
+    let knowledge_backlinks: Vec<LinkRow> = backlinks
+        .iter()
+        .filter(|link| link.origin == "knowledge")
+        .cloned()
+        .collect();
+    let metadata = state
+        .database
+        .metadata(id)
+        .await
+        .map_err(AppError::internal)?
+        .into_iter()
+        .map(|entry| MetadataView {
+            key: entry.key,
+            value: entry.value_json,
+        })
+        .collect();
+
+    let content = render_markdown(&read.content, &markdown_references);
     let title = read
         .document
         .as_ref()
@@ -214,8 +254,11 @@ async fn page(
         mount_name: read.mount.name.clone(),
         path: read.relative_path.clone(),
         content,
-        references: link_views(&references, false),
-        backlinks: link_views(&backlinks, true),
+        references: link_views(&markdown_references, false),
+        backlinks: link_views(&markdown_backlinks, true),
+        knowledge_references: link_views(&knowledge_references, false),
+        knowledge_backlinks: link_views(&knowledge_backlinks, true),
+        metadata,
     })
 }
 
@@ -297,9 +340,19 @@ fn link_views(links: &[LinkRow], backlinks: bool) -> Vec<LinkView> {
                     kind: link.kind.clone(),
                 }
             } else {
-                let label = match &link.anchor {
-                    Some(anchor) => format!("{}#{anchor}", link.target),
-                    None => link.target.clone(),
+                let label = if link.origin == "knowledge" {
+                    if link.target.is_empty() {
+                        link.target_id
+                            .map(|id| format!("#{id}"))
+                            .unwrap_or_else(|| "(unresolved)".into())
+                    } else {
+                        link.target.clone()
+                    }
+                } else {
+                    match &link.anchor {
+                        Some(anchor) => format!("{}#{anchor}", link.target),
+                        None => link.target.clone(),
+                    }
                 };
                 match link.target_id {
                     Some(id) => LinkView {

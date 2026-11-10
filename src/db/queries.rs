@@ -1,15 +1,15 @@
-//! Read queries for documents, search, and links.
+//! Read queries for documents, links, and metadata.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use chrono::DateTime;
+use chrono::{DateTime, Utc};
 use sqlx::Row;
 
 use crate::core::document::Document;
 
 use super::{Database, DbError, Result};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct LinkRow {
     pub source_id: i64,
     pub source_path: String,
@@ -17,53 +17,63 @@ pub struct LinkRow {
     pub target: String,
     pub anchor: Option<String>,
     pub kind: String,
+    pub origin: String,
+}
+
+#[derive(Debug)]
+pub struct MetadataEntry {
+    pub key: String,
+    pub value_json: String,
+    pub updated_at: DateTime<Utc>,
+    pub updated_by: String,
 }
 
 impl Database {
     pub async fn document_counts(&self) -> Result<HashMap<i64, i64>> {
         let rows = sqlx::query(
-            "SELECT mount_id, COUNT(*) AS document_count
-             FROM documents
-             GROUP BY mount_id",
+            "SELECT d.mount_id, COUNT(*) AS document_count
+             FROM documents d JOIN mounts m ON m.id = d.mount_id
+             WHERE m.is_active = 1 AND d.missing_at IS NULL
+             GROUP BY d.mount_id",
         )
         .fetch_all(&self.pool)
         .await?;
 
         let mut counts = HashMap::new();
         for row in rows {
-            let mount_id: i64 = row.try_get("mount_id")?;
-            let document_count: i64 = row.try_get("document_count")?;
-            counts.insert(mount_id, document_count);
+            counts.insert(row.try_get("mount_id")?, row.try_get("document_count")?);
         }
         Ok(counts)
     }
 
+    /// Lists visible documents for the viewer and CLI.
     pub async fn list_documents(&self, mount_id: Option<i64>) -> Result<Vec<Document>> {
-        let rows = if let Some(mount_id) = mount_id {
-            sqlx::query(
-                "SELECT id, mount_id, relative_path, title, content_hash, modified_at, indexed_at
-                 FROM documents
-                 WHERE mount_id = ?
-                 ORDER BY relative_path",
-            )
-            .bind(mount_id)
-            .fetch_all(&self.pool)
-            .await?
-        } else {
-            sqlx::query(
-                "SELECT id, mount_id, relative_path, title, content_hash, modified_at, indexed_at
-                 FROM documents
-                 ORDER BY mount_id, relative_path",
-            )
-            .fetch_all(&self.pool)
-            .await?
-        };
+        let rows = sqlx::query(
+            "SELECT d.id, d.mount_id, d.relative_path, d.title, d.content_hash,
+                    d.modified_at, d.indexed_at
+             FROM documents d JOIN mounts m ON m.id = d.mount_id
+             WHERE d.missing_at IS NULL AND m.is_active = 1
+               AND (? IS NULL OR d.mount_id = ?)
+             ORDER BY d.mount_id, d.relative_path",
+        )
+        .bind(mount_id)
+        .bind(mount_id)
+        .fetch_all(&self.pool)
+        .await?;
 
         rows.iter().map(map_document).collect()
     }
 
+    /// Lists every known document, including ones whose files are missing.
     pub async fn documents_for_mount(&self, mount_id: i64) -> Result<Vec<Document>> {
-        self.list_documents(Some(mount_id)).await
+        let rows = sqlx::query(
+            "SELECT id, mount_id, relative_path, title, content_hash, modified_at, indexed_at
+             FROM documents WHERE mount_id = ? ORDER BY relative_path",
+        )
+        .bind(mount_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter().map(map_document).collect()
     }
 
     pub async fn get_document(&self, id: i64) -> Result<Option<Document>> {
@@ -93,6 +103,20 @@ impl Database {
         rows.first().map(map_document).transpose()
     }
 
+    pub async fn missing_paths(&self, mount_id: i64) -> Result<HashSet<String>> {
+        let rows = sqlx::query(
+            "SELECT relative_path FROM documents
+             WHERE mount_id = ? AND missing_at IS NOT NULL",
+        )
+        .bind(mount_id)
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows
+            .iter()
+            .map(|row| row.try_get("relative_path"))
+            .collect::<std::result::Result<_, sqlx::Error>>()?)
+    }
+
     pub async fn document_exists(&self, id: i64) -> Result<bool> {
         Ok(
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM documents WHERE id = ?")
@@ -104,17 +128,44 @@ impl Database {
     }
 
     pub async fn links(&self, document_id: i64, backlinks: bool) -> Result<Vec<LinkRow>> {
-        let column = if backlinks {
-            "r.target_document_id"
+        let markdown_column = if backlinks {
+            "target_document_id"
         } else {
-            "r.source_document_id"
+            "source_document_id"
         };
-        let sql = format!("SELECT r.source_document_id, d.relative_path, r.target_document_id, r.target_uri, r.target_anchor, r.source_kind FROM \"references\" r JOIN documents d ON d.id = r.source_document_id WHERE {column} = ? ORDER BY d.relative_path, r.id");
-        let rows = sqlx::query(&sql)
+        let knowledge_column = if backlinks {
+            "target_document_id"
+        } else {
+            "source_document_id"
+        };
+        let markdown_sql = format!(
+            "SELECT l.source_document_id, d.relative_path, l.target_document_id,
+                    COALESCE(l.target_uri, '') AS target_uri, l.target_anchor,
+                    l.source_kind AS kind, 'markdown' AS origin
+             FROM markdown_links l JOIN documents d ON d.id = l.source_document_id
+             WHERE l.{markdown_column} = ?"
+        );
+        let knowledge_sql = format!(
+            "SELECT k.source_document_id, d.relative_path, k.target_document_id,
+                    COALESCE(k.target_uri, '') AS target_uri, NULL AS target_anchor,
+                    k.relation_type AS kind, 'knowledge' AS origin
+             FROM knowledge_links k JOIN documents d ON d.id = k.source_document_id
+             WHERE k.{knowledge_column} = ?"
+        );
+
+        let mut rows = sqlx::query(&markdown_sql)
             .bind(document_id)
             .fetch_all(&self.pool)
             .await?;
-        rows.iter()
+        rows.extend(
+            sqlx::query(&knowledge_sql)
+                .bind(document_id)
+                .fetch_all(&self.pool)
+                .await?,
+        );
+
+        let mut links: Vec<LinkRow> = rows
+            .iter()
             .map(|row| {
                 Ok(LinkRow {
                     source_id: row.try_get("source_document_id")?,
@@ -122,10 +173,107 @@ impl Database {
                     target_id: row.try_get("target_document_id")?,
                     target: row.try_get("target_uri")?,
                     anchor: row.try_get("target_anchor")?,
-                    kind: row.try_get("source_kind")?,
+                    kind: row.try_get("kind")?,
+                    origin: row.try_get("origin")?,
+                })
+            })
+            .collect::<Result<_>>()?;
+        links.sort_by(|left, right| {
+            left.source_path
+                .cmp(&right.source_path)
+                .then_with(|| left.origin.cmp(&right.origin))
+                .then_with(|| left.kind.cmp(&right.kind))
+        });
+        Ok(links)
+    }
+
+    pub async fn metadata(&self, document_id: i64) -> Result<Vec<MetadataEntry>> {
+        let rows = sqlx::query(
+            "SELECT key, value_json, updated_at, updated_by
+             FROM document_metadata WHERE document_id = ? ORDER BY key",
+        )
+        .bind(document_id)
+        .fetch_all(&self.pool)
+        .await?;
+        rows.iter()
+            .map(|row| {
+                let updated_at: i64 = row.try_get("updated_at")?;
+                Ok(MetadataEntry {
+                    key: row.try_get("key")?,
+                    value_json: row.try_get("value_json")?,
+                    updated_at: DateTime::from_timestamp_millis(updated_at)
+                        .ok_or(DbError::InvalidTimestamp(updated_at))?,
+                    updated_by: row.try_get("updated_by")?,
                 })
             })
             .collect()
+    }
+
+    pub async fn set_metadata(
+        &self,
+        document_id: i64,
+        key: &str,
+        value_json: &str,
+        updated_by: &str,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO document_metadata (document_id, key, value_json, updated_at, updated_by)
+             VALUES (?, ?, ?, ?, ?)
+             ON CONFLICT(document_id, key) DO UPDATE SET
+                value_json = excluded.value_json,
+                updated_at = excluded.updated_at,
+                updated_by = excluded.updated_by",
+        )
+        .bind(document_id)
+        .bind(key)
+        .bind(value_json)
+        .bind(Utc::now().timestamp_millis())
+        .bind(updated_by)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn add_knowledge_link(
+        &self,
+        source_document_id: i64,
+        target_document_id: Option<i64>,
+        target_uri: Option<&str>,
+        relation_type: &str,
+        description: Option<&str>,
+        provenance: Option<&str>,
+        created_by: &str,
+        status: &str,
+    ) -> Result<i64> {
+        let now = Utc::now().timestamp_millis();
+        Ok(sqlx::query_scalar(
+            "INSERT INTO knowledge_links
+                (source_document_id, target_document_id, target_uri, relation_type,
+                 description, provenance, created_by, status, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             RETURNING id",
+        )
+        .bind(source_document_id)
+        .bind(target_document_id)
+        .bind(target_uri)
+        .bind(relation_type)
+        .bind(description)
+        .bind(provenance)
+        .bind(created_by)
+        .bind(status)
+        .bind(now)
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    pub async fn delete_knowledge_link(&self, id: i64) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM knowledge_links WHERE id = ?")
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
     }
 }
 

@@ -4,7 +4,7 @@ use anyhow::{bail, Result};
 
 use crate::config::{Config, Mount};
 use crate::core::document::Document;
-use crate::db::queries::LinkRow;
+use crate::db::queries::{LinkRow, MetadataEntry};
 use crate::index::indexer::SyncOutcome;
 use crate::search::SearchHit;
 use crate::usecase::mount::{MountResult, MountRow};
@@ -44,6 +44,7 @@ pub fn mounts(rows: &[MountRow]) {
 pub fn unmounted(mount: &Mount) {
     println!("Unmounted \"{}\" ({})", mount.name, mount.id);
     println!("Markdown files were left untouched.");
+    println!("Index metadata and knowledge links were kept inactive.");
 }
 
 pub fn page_list(config: &Config, documents: &[Document], empty: &str) {
@@ -76,6 +77,24 @@ pub fn search_hits(hits: &[SearchHit]) {
         println!(
             "{}\t{}\t{}\t{}",
             hit.mount_name, hit.relative_path, hit.line, hit.text
+        );
+    }
+}
+
+pub fn metadata(entries: &[MetadataEntry]) {
+    if entries.is_empty() {
+        println!("No metadata.");
+        return;
+    }
+
+    println!("KEY\tVALUE\tUPDATED_BY\tUPDATED_AT");
+    for entry in entries {
+        println!(
+            "{}\t{}\t{}\t{}",
+            entry.key,
+            entry.value_json,
+            entry.updated_by,
+            entry.updated_at.to_rfc3339()
         );
     }
 }

@@ -5,4 +5,5 @@
 
 pub mod document;
 pub mod index;
+pub mod knowledge;
 pub mod mount;

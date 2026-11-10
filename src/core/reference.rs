@@ -12,6 +12,7 @@ pub struct Reference {
     pub anchor: Option<String>,
     pub raw: String,
     pub kind: &'static str,
+    pub line: usize,
 }
 
 /// A reference resolved against a mount's documents, ready to persist.
@@ -23,6 +24,7 @@ pub struct ResolvedReference {
     pub anchor: Option<String>,
     pub raw: String,
     pub kind: &'static str,
+    pub line: usize,
 }
 
 pub fn extract(content: &str) -> Vec<Reference> {
@@ -36,7 +38,7 @@ pub fn extract(content: &str) -> Vec<Reference> {
         let text = matches!(event, Event::Text(_)) && link_depth == 0 && !code_block;
         if !text || text_start.is_some() && range.start != text_end {
             if let Some(start) = text_start.take() {
-                extract_wiki(&body[start..text_end], &mut result);
+                extract_wiki(&body[start..text_end], start, body, &mut result);
             }
         }
         match event {
@@ -45,11 +47,13 @@ pub fn extract(content: &str) -> Vec<Reference> {
             Event::Start(Tag::Link { dest_url, .. }) => {
                 link_depth += 1;
                 let (target, anchor) = split_anchor(&dest_url);
+                let line = line_number(body, range.start);
                 result.push(Reference {
                     target,
                     anchor,
                     raw: body[range].to_owned(),
                     kind: "markdown",
+                    line,
                 });
             }
             Event::End(pulldown_cmark::TagEnd::Link) => link_depth -= 1,
@@ -61,12 +65,12 @@ pub fn extract(content: &str) -> Vec<Reference> {
         }
     }
     if let Some(start) = text_start {
-        extract_wiki(&body[start..text_end], &mut result);
+        extract_wiki(&body[start..text_end], start, body, &mut result);
     }
     result
 }
 
-fn extract_wiki(text: &str, result: &mut Vec<Reference>) {
+fn extract_wiki(text: &str, base: usize, body: &str, result: &mut Vec<Reference>) {
     let mut rest = text;
     while let Some(start) = rest.find("[[") {
         let Some(end) = rest[start + 2..].find("]]") else {
@@ -81,10 +85,15 @@ fn extract_wiki(text: &str, result: &mut Vec<Reference>) {
                 anchor,
                 raw: raw.to_owned(),
                 kind: "wiki",
+                line: line_number(body, base + start),
             });
         }
         rest = &rest[start + end + 4..];
     }
+}
+
+fn line_number(body: &str, offset: usize) -> usize {
+    body[..offset].bytes().filter(|byte| *byte == b'\n').count() + 1
 }
 
 fn split_anchor(value: &str) -> (String, Option<String>) {

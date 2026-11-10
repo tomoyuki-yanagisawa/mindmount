@@ -84,12 +84,26 @@ pub async fn register(
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| default_name(&directory_path));
 
-    let mount = Mount {
-        id: ids.next_id().context("cannot generate a mount id")?,
-        name,
-        project_path,
-        directory_path,
-        created_at: Utc::now(),
+    // Restore an inactive mount for the same directory so its document IDs,
+    // metadata, and knowledge links stay attached.
+    let mount = match database
+        .inactive_mount_by_directory(&directory_path.to_string_lossy())
+        .await?
+    {
+        Some(existing) => Mount {
+            id: existing.id,
+            name,
+            project_path,
+            directory_path,
+            created_at: existing.created_at,
+        },
+        None => Mount {
+            id: ids.next_id().context("cannot generate a mount id")?,
+            name,
+            project_path,
+            directory_path,
+            created_at: Utc::now(),
+        },
     };
 
     config.mounts.push(mount.clone());

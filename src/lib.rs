@@ -6,3 +6,4 @@ pub mod index;
 pub mod mcp;
 pub mod storage;
 pub mod usecase;
+pub mod web;

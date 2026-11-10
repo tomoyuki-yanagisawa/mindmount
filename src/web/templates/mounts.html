@@ -1,0 +1,17 @@
+{% extends "layout.html" %}
+{% block content %}
+<h1>マウント</h1>
+{% if mounts.len() == 0 %}
+<p class="muted">マウントが登録されていません。</p>
+{% else %}
+<ul class="mounts">
+  {% for mount in mounts %}
+  <li>
+    <a href="/search?mount={{ mount.id }}">{{ mount.name }}</a>
+    <span class="muted">{{ mount.documents }} pages</span>
+    <div class="path">{{ mount.directory }}</div>
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+{% endblock %}

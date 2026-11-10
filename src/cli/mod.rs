@@ -39,7 +39,7 @@ pub enum Command {
         #[command(subcommand)]
         command: IndexCommand,
     },
-    /// Start the read-only web viewer (Phase 4).
+    /// Start the read-only web viewer.
     Serve(ServerOptions),
     /// Start the MCP stdio server.
     Mcp,
@@ -147,6 +147,9 @@ pub async fn run(cli: Cli) -> Result<()> {
     if matches!(cli.command, Some(Command::Mcp)) {
         return crate::mcp::run(&paths).await;
     }
+    if let Some(Command::Serve(options)) = &cli.command {
+        return crate::web::run(&paths, &options.host, options.port).await;
+    }
     if matches!(
         cli.command,
         Some(Command::Index {
@@ -178,7 +181,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             .await?;
             output::mount_result(&result);
             println!(
-                "note: the read-only web viewer will listen on {}:{} starting in Phase 4",
+                "note: run `mindmount serve --host {} --port {}` to open the read-only web viewer",
                 cli.server.host, cli.server.port
             );
         }
@@ -228,11 +231,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                 output::links(&links);
             }
         },
-        Some(Command::Serve(options)) => bail!(
-            "`serve` (read-only web viewer) is not implemented yet (Phase 4); requested {}:{}",
-            options.host,
-            options.port
-        ),
+        Some(Command::Serve(_)) => unreachable!("serve is handled before acquiring the lock"),
         Some(Command::Mcp) => unreachable!("mcp is handled before acquiring the lock"),
     }
 

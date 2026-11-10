@@ -1,0 +1,29 @@
+{% extends "layout.html" %}
+{% block content %}
+<h1>検索</h1>
+<form class="search-page" action="/search" method="get">
+  <input type="search" name="q" value="{{ query }}" placeholder="検索" aria-label="検索">
+  <select name="mount" aria-label="マウント">
+    <option value="">すべてのマウント</option>
+    {% for mount in mounts %}
+    <option value="{{ mount.id }}" {% if mount.selected %}selected{% endif %}>{{ mount.name }}</option>
+    {% endfor %}
+  </select>
+  <button type="submit">検索</button>
+</form>
+
+{% if searched %}
+  {% if results.len() == 0 %}
+  <p class="muted">一致するページはありません。</p>
+  {% else %}
+  <ul class="results">
+    {% for document in results %}
+    <li>
+      <a href="/page/{{ document.id }}">{{ document.title }}</a>
+      <span class="muted">{{ document.mount }} / {{ document.path }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+{% endif %}
+{% endblock %}

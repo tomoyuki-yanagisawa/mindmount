@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -646,7 +646,7 @@ fn root_invocation_mounts_and_notes_the_phase_four_server() {
     ]);
     assert_success(&output);
     assert!(stdout(&output).contains("Mounted \"Root note\""));
-    assert!(stdout(&output).contains("Phase 4"));
+    assert!(stdout(&output).contains("mindmount serve"));
     assert_eq!(env.load_config().mounts.len(), 1);
 }
 
@@ -680,12 +680,52 @@ fn refuses_concurrent_operations_without_modifying_configuration() {
 }
 
 #[test]
-fn unimplemented_serve_reports_its_phase() {
+fn serve_rejects_non_loopback_hosts() {
     let env = TestEnv::new();
 
-    let output = env.run(&["serve"]);
+    let output = env.run(&["serve", "--host", "0.0.0.0"]);
     assert_failure(&output);
-    assert!(stderr(&output).contains("Phase 4"));
+    assert!(stderr(&output).contains("loopback"));
+}
+
+#[test]
+fn serve_starts_and_serves_mounts() {
+    let env = TestEnv::new();
+    assert_success(&env.mount("Notes"));
+
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let mut child = env
+        .command()
+        .args(["serve", "--port", &port.to_string()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
+        assert!(Instant::now() < deadline, "serve did not start");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    write!(
+        stream,
+        "GET /mounts HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    )
+    .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(response.contains("Notes"), "{response}");
 }
 
 #[test]

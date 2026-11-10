@@ -113,7 +113,9 @@ AI が同じ Markdown を読み書きできるようにする。
 
 ### タスク
 
-- `rmcp` の stdio transport（実装済み）
+- `rmcp` の Streamable HTTP（`/mcp`、実装済み）
+- 任意の stdio アダプタ（実装済み）
+- デーモン（Web・MCP HTTP・監視を1プロセス、実装済み）
 - Tools（実装済み）
   - `mounts`
   - `search`
@@ -132,13 +134,14 @@ AI が同じ Markdown を読み書きできるようにする。
   - `content_hash` の一致を要求
   - 新規作成時の存在確認
 - パス指定での読み書き（実装済み）
-- stdio の JSON-RPC 結合テスト（実装済み）
+- stdio と HTTP の JSON-RPC 結合テスト（実装済み）
 - stdout にログを出さない運用（実装済み）
 
 ### 完了条件
 
 AI が同じ Markdown を読み書きできること。
-stdio の initialize / tools / resources / read / write を結合テストで確認済み。
+stdio と HTTP の initialize / tools / resources / read / write を結合テストで確認済み。
+デーモンの起動・停止と、Web / MCP HTTP の同時提供も確認済み。
 OpenCode / Claude Code など実クライアントでの確認は利用環境で行う。
 
 ### 設計上の論点
@@ -219,12 +222,14 @@ Host / Origin 検証とループバック bind を備えています。
 
 ## 直近の優先順位
 
-1. MCP stdio サーバー
-2. 読み取り専用 Web ビューア
+1. OpenCode / Claude Code からの HTTP MCP 接続確認
+2. リリース整備（Phase 5）
 
 ## 未解決の設計課題
 
-- 日本語検索のトークン分割方式
+- grep 検索の文脈行数と結果上限の調整
+- MCP HTTP の認証（現状はループバック + Host / Origin 検証）
+- デーモンのログイン時自動起動
 - 参照の正規化と曖昧性解決
 - frontmatter ID の衝突・移行
 - 設定ディレクトリを `XDG_DATA_HOME` へ移す時期

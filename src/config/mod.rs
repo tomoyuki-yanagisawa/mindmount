@@ -1,7 +1,9 @@
 //! `config.toml`: the authoritative mount registry.
 
+pub mod credentials;
 pub mod paths;
 
+pub use credentials::Credentials;
 pub use paths::AppPaths;
 
 use std::fs;

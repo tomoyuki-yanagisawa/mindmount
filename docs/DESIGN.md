@@ -107,7 +107,7 @@ SQLite 固有の型は `db` の外へ漏らさず、呼び出し側は `Mount` �
 ### 4.1 マウント登録
 
 ```text
-storage mount
+mount add
   ├── config.toml を読み込む（なければ作成し、node_id を永続化）
   ├── SQLite を開き migration を適用
   ├── project / directory を canonicalize
@@ -124,7 +124,7 @@ storage mount
 ### 4.2 index 更新
 
 ```text
-index rescan / index watch / storage mount
+index rescan / index watch / mount add
   ├── config.toml を読み込む
   ├── DB の mounts を config に同期（削除されたマウントも反映）
   └── 各マウントについて
@@ -405,7 +405,7 @@ MCP の `write` Tool（Phase 3）では、`content_hash` による楽観的ロ�
 
 ```text
 mindmount daemon start|stop|restart|status|run
-mindmount storage mount|list|unmount
+mindmount mount add|list|remove|sync
 mindmount index rescan|watch|pages|search|references|backlinks
 mindmount metadata get|set
 mindmount link add|delete
@@ -473,6 +473,7 @@ MCP サーバーは CLI や `index watch` と同じ `usecase` を使います。
 限定します。HTTP MCP も同じハンドラを利用します。
 
 デーモンは `127.0.0.1` / `::1` にのみ bind し、`daemon start|stop|status|run` で管理します。
+MCP HTTP は `credentials.toml` の Bearer Token を要求し、Web は Host / Origin を検証します。
 CLI はデーモンを必須にせず、同じ usecase を直接使います。デーモンは設定ファイルの変更を
 監視してマウントを追従します。
 
@@ -545,6 +546,7 @@ cargo fmt --all -- --check
 - Markdown は外部入力として扱う
 - HTML レンダリング時の XSS 対策（Phase 4）
 - atomic file write と楽観的ロック（MCP write）
+- MCP HTTP の Bearer Token 認証
 - stdio MCP の stdout にログを出さない
 - MCP から任意のシェルコマンドを実行させない
 - MCP が返す文章を Mindmount 自身への指示として解釈しない

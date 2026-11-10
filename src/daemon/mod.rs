@@ -6,9 +6,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use axum::middleware;
+use axum::extract::{Request, State};
+use axum::http::{header, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
+use axum::Router;
 
-use crate::config::AppPaths;
+use crate::config::{AppPaths, Credentials};
 use crate::db::Database;
 use crate::index;
 use crate::mcp;
@@ -27,9 +31,16 @@ pub async fn run(paths: &AppPaths, host: &str, port: u16) -> Result<()> {
         .with_context(|| format!("cannot bind {host}:{port}"))?;
     let port = listener.local_addr()?.port();
 
+    let credentials = Credentials::load_or_create(&paths.credentials_file())?;
     let state = web::AppState::new(paths.clone(), database.clone(), port);
-    let app = web::router(state.clone())
+    let mcp_app = Router::new()
         .nest_service("/mcp", mcp::http_service(paths.clone(), database))
+        .layer(middleware::from_fn_with_state(
+            credentials.mcp_token,
+            require_bearer,
+        ));
+    let app = web::router(state.clone())
+        .merge(mcp_app)
         .layer(middleware::from_fn_with_state(state, web::guard));
 
     let watcher_paths = paths.clone();
@@ -144,4 +155,22 @@ fn is_running(pid: u32) -> bool {
         .status()
         .map(|status| status.success())
         .unwrap_or(false)
+}
+
+async fn require_bearer(State(token): State<String>, request: Request, next: Next) -> Response {
+    let authorized = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "))
+        .is_some_and(|value| value == token);
+    if !authorized {
+        return (
+            StatusCode::UNAUTHORIZED,
+            [(header::WWW_AUTHENTICATE, "Bearer")],
+            "unauthorized",
+        )
+            .into_response();
+    }
+    next.run(request).await
 }

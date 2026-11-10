@@ -32,6 +32,24 @@ pub struct Database {
 }
 
 impl Database {
+    pub async fn backup(&self, path: &Path) -> Result<()> {
+        if path.exists() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                format!("backup path already exists: {}", path.display()),
+            )
+            .into());
+        }
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        sqlx::query("VACUUM INTO ?")
+            .bind(path.to_string_lossy().into_owned())
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn open(path: &Path) -> Result<Self> {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;

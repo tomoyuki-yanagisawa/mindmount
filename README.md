@@ -58,10 +58,10 @@ cargo test
 
 ```bash
 # マウント登録と index 構築
-cargo run -- storage mount -p ~/Project/app -d ./notes -n "Project notes"
+cargo run -- mount add -p ~/Project/app -d ./notes -n "Project notes"
 
 # マウント一覧
-cargo run -- storage list
+cargo run -- mount list
 
 # index 済みページ一覧
 cargo run -- index pages
@@ -70,7 +70,7 @@ cargo run -- index pages
 cargo run -- index rescan
 
 # マウント解除（Markdown ファイルは削除しない）
-cargo run -- storage unmount <mount-id>
+cargo run -- mount remove <mount-id>
 
 # デーモン（Web ビューア + MCP HTTP + 監視）
 cargo run -- daemon start
@@ -84,7 +84,7 @@ CLI は責務ごとにグループ化されています。
 
 ```text
 mindmount daemon start|stop|restart|status|run
-mindmount storage mount|list|unmount
+mindmount mount add|list|remove|sync
 mindmount index rescan|watch|pages|search|references|backlinks
 mindmount metadata get|set
 mindmount link add|delete
@@ -106,11 +106,12 @@ $XDG_CONFIG_HOME/mindmount/   # 未設定時: ~/.config/mindmount/
 ├── mindmount.daemon.lock     # デーモンの二重起動防止
 ├── daemon.pid                # デーモンの PID
 ├── daemon.log                # バックグラウンド起動時のログ
-└── db/mindmount.sqlite       # 派生 index
+├── credentials.toml          # MCP HTTP の Bearer Token
+└── db/mindmount.sqlite       # 派生 index と DB 独自データ
 ```
 
 Markdown ファイルはマウント先にそのまま残ります。マウントや index 構築で
-既存ファイルを書き換えることはありません。`storage unmount` も Markdown を
+既存ファイルを書き換えることはありません。`mount remove` も Markdown を
 削除せず、マウントを inactive にして DB のメタデータと Knowledge Links を保持します。
 検索は実ファイルを直接 grep するため、SQLite に Markdown の本文は保存されません。
 

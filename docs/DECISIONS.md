@@ -26,7 +26,7 @@
 - Phase 4 の完了条件は「人間がブラウザで AI と同じ知識を閲覧できる」に変更する。
 - 本プロジェクトの Web UI は閲覧専用の範囲に留める。
 
-## D-002: CLI を `storage` / `index` のサブコマンドグループに分ける
+## D-002: CLI を `mount` / `index` / `daemon` のサブコマンドグループに分ける
 
 - 日付: 2026-11-09
 - 状態: Accepted
@@ -40,8 +40,11 @@
 トップレベルを責務ごとのグループに分ける。
 
 ```text
-mindmount storage mount|list|unmount
-mindmount index rescan|pages
+mindmount daemon start|stop|restart|status|run
+mindmount mount add|list|remove|sync
+mindmount index rescan|watch|pages|search|references|backlinks
+mindmount metadata get|set
+mindmount link add|delete
 mindmount serve
 mindmount mcp
 ```
@@ -50,8 +53,8 @@ mindmount mcp
 
 ### 影響
 
-- 旧コマンド（`mount` / `mounts` / `unmount` / `reindex` / `pages`）は削除した。
-- 将来の `index search`、`index references`、`storage info` などは各グループ配下に追加する。
+- 旧コマンド（`storage mount` / `storage list` / `storage unmount`）は削除した。
+- マウント操作は `mount`、index と読み取りは `index`、常駐処理は `daemon` に集約する。
 
 ## D-003: ローカル版の重点は MCP と人間用ビューア
 

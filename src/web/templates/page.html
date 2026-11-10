@@ -1,0 +1,37 @@
+{% extends "layout.html" %}
+{% block content %}
+<article>
+  <h1>{{ title }}</h1>
+  <p class="meta">{{ mount_name }} / {{ path }}</p>
+  <div class="markdown">{{ content|safe }}</div>
+</article>
+
+<section>
+  <h2>リンク</h2>
+  {% if references.len() == 0 %}
+  <p class="muted">なし</p>
+  {% else %}
+  <ul>
+    {% for link in references %}
+    <li>
+      {% if link.linked %}<a href="{{ link.url }}">{{ link.label }}</a>{% else %}{{ link.label }}{% endif %}
+      <span class="kind">{{ link.kind }}</span>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+
+<section>
+  <h2>バックリンク</h2>
+  {% if backlinks.len() == 0 %}
+  <p class="muted">なし</p>
+  {% else %}
+  <ul>
+    {% for link in backlinks %}
+    <li><a href="{{ link.url }}">{{ link.label }}</a></li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+</section>
+{% endblock %}

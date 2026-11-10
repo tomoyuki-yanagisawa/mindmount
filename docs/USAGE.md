@@ -52,9 +52,6 @@ mindmount index search <QUERY> [-m <MOUNT_ID>]
 mindmount index references <DOCUMENT_ID>
 mindmount index backlinks <DOCUMENT_ID>
 
-mindmount serve [--host <HOST>] [--port <PORT>]
-mindmount mcp
-
 mindmount -p <PATH> -d <PATH> [-n <NAME>] [--host <HOST>] [--port <PORT>]
 ```
 
@@ -81,8 +78,6 @@ mindmount -p <PATH> -d <PATH> [-n <NAME>] [--host <HOST>] [--port <PORT>]
 | `metadata set` | DB 独自メタデータを設定する |
 | `link add` | Knowledge Link を追加する |
 | `link delete` | Knowledge Link を削除する |
-| `serve` | デーモンをフォアグラウンドで起動する（`daemon run` の別名） |
-| `mcp` | 任意の MCP stdio アダプタを起動する |
 
 引数だけの `mindmount -p ... -d ...` は、`mount add` と同じ登録・index 構築を行います。
 
@@ -327,7 +322,6 @@ mindmount daemon run
 
 デーモンは Web ビューア、MCP Streamable HTTP、ファイル監視を1プロセスで提供します。
 `daemon start` はバックグラウンド、`daemon run` はフォアグラウンドで起動します。
-`serve` は `daemon run` の別名です。
 
 - Web: `http://127.0.0.1:3000/`
 - MCP: `http://127.0.0.1:3000/mcp`
@@ -337,31 +331,39 @@ mindmount daemon run
 - 二重起動はロックで拒否
 - バックグラウンド起動時のログ: `~/.config/mindmount/daemon.log`
 
-## mcp
+### Web ビューア
 
-```bash
-mindmount mcp
-```
+表示できるもの:
 
-通常はデーモンの `/mcp` を MCP クライアントから利用します。stdio が必要な場合は
-`mindmount mcp` を任意のアダプタとして使えます。
+- マウント一覧（`/`、`/mounts`）
+- ページ本文と参照・バックリンク（`/page/<DOCUMENT_ID>`）
+- grep 検索（`/search`）
+
+Markdown 内の解決済みリンクと Wiki リンクはページ URL に変換されます。
+HTML はレンダリング後にサニタイズされ、CSS はバイナリに埋め込まれています。
+Host / Origin を検証するため、想定外のホスト名や Origin からのアクセスは拒否されます。
+
+Web UI では Markdown を編集しません。人間は vim などでファイルを直接編集し、
+`index rescan` で反映します。詳細は [DECISIONS.md](DECISIONS.md) の D-001 を参照してください。
+
+## MCP
+
+MCP はデーモンの `/mcp` で Streamable HTTP として提供します。
 
 Tools:
 
 - `mounts` / `list` / `search`
-- `read` / `write`
+- `read`
 - `links` / `backlinks`
 - `metadata_get` / `metadata_set`
 - `link_add` / `link_delete`
 
-`read` は `document_id` または `mount_id` + `path` を受け付けます。`write` も同じ指定方法で、
-既存ページの更新には `read` が返した `content_hash` を `expected_hash` として渡します。
-新規作成では `expected_hash` を省略します。
+`read` は `document_id` または `mount_id` + `path` を受け付けます。
+Mindmount は Markdown を編集しないため、書き込み Tool は提供しません。
 
 Resources として `mindmount://<mount-id>/documents/<document-id>` も公開します。
 
-デーモンの `/mcp` は `credentials.toml` の `mcp_token` を
-`Authorization: Bearer <token>` で要求します。stdio では認証は不要です。
+`credentials.toml` の `mcp_token` を `Authorization: Bearer <token>` で要求します。
 
 ```bash
 cat ~/.config/mindmount/credentials.toml
@@ -381,33 +383,6 @@ MCP クライアントの設定例（形式はクライアントにより異な�
   }
 }
 ```
-
-書き込み時は index が同期されます。stdio ではログを stdout に出さず stderr に限定します。
-
-## serve
-
-```bash
-mindmount serve
-mindmount serve --port 8080
-```
-
-**読み取り専用の Web ビューア**と MCP HTTP をフォアグラウンドで起動します。
-既定では `127.0.0.1:3000` で待ち受けます。bind 先は `127.0.0.1` または `::1` の
-ループバックに限定されます。バックグラウンド実行は `daemon start` を使います。
-
-表示できるもの:
-
-- マウント一覧（`/`、`/mounts`）
-- ページ本文と参照・バックリンク（`/page/<DOCUMENT_ID>`）
-- grep 検索（`/search`）
-
-Markdown 内の解決済みリンクと Wiki リンクはページ URL に変換されます。
-HTML はレンダリング後にサニタイズされ、CSS はバイナリに埋め込まれています。
-Host / Origin を検証するため、想定外のホスト名や Origin からのアクセスは拒否されます。
-
-ローカル版の Web UI では Markdown を編集しません。人間は vim などでファイルを
-直接編集し、`index rescan` で反映します。Web UI での編集は提供しません。
-詳細は [DECISIONS.md](DECISIONS.md) の D-001 を参照してください。
 
 ## ファイル編集と index 反映
 
@@ -601,15 +576,12 @@ SQLite の WAL と 5 秒の busy timeout を使っています。別プロセス
 - index 構築は Markdown を変更しない
 - `unmount` は Markdown を削除しない
 - 設定ファイルは一時ファイル経由で atomic に書き換える
-- 内部の書き込み API は一時ファイル + fsync + rename を使う
-- ローカル Web ビューアは Phase 4 で GET のみを提供する予定
-- Markdown の HTML レンダリング時はサニタイズする予定
+- ローカル Web ビューアは GET のみを提供する
+- Markdown の HTML レンダリング時はサニタイズする
 
 ## 現時点の制約
 
 - `index watch` を停止している間の外部編集は手動で再走査する
-- MCP なし（Phase 3）
-- Web ビューアなし（Phase 4）
 - ローカル Web UI は閲覧専用（編集機能なし）
 - frontmatter は簡易 YAML パーサ
 - `index rescan` は毎回全ファイルを走査する

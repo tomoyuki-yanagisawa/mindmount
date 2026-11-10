@@ -109,18 +109,16 @@ Web UI での編集は提供しません。
 
 ### 目的
 
-AI が同じ Markdown を読み書きできるようにする。
+AI が同じ Markdown を検索・参照できるようにする。
 
 ### タスク
 
 - `rmcp` の Streamable HTTP（`/mcp`、実装済み）
-- 任意の stdio アダプタ（実装済み）
 - デーモン（Web・MCP HTTP・監視を1プロセス、実装済み）
 - Tools（実装済み）
   - `mounts`
   - `search`
   - `read`
-  - `write`
   - `list`
   - `links`
   - `backlinks`
@@ -130,24 +128,18 @@ AI が同じ Markdown を読み書きできるようにする。
   - `link_delete`
 - Resources（実装済み）
   - `mindmount://<mount-id>/documents/<document-id>`
-- `write` の楽観的ロック（実装済み）
-  - `content_hash` の一致を要求
-  - 新規作成時の存在確認
-- パス指定での読み書き（実装済み）
-- stdio と HTTP の JSON-RPC 結合テスト（実装済み）
-- stdout にログを出さない運用（実装済み）
+- パス指定での読み取り（実装済み）
+- HTTP の JSON-RPC 結合テスト（実装済み）
 
 ### 完了条件
 
-AI が同じ Markdown を読み書きできること。
-stdio と HTTP の initialize / tools / resources / read / write を結合テストで確認済み。
+AI が同じ Markdown を検索・参照できること。
+HTTP の initialize / tools / resources / read を結合テストで確認済み。
 デーモンの起動・停止と、Web / MCP HTTP の同時提供も確認済み。
 OpenCode / Claude Code など実クライアントでの確認は利用環境で行う。
 
 ### 設計上の論点
 
-- 更新競合時のエラー形式
-- 書き込み時の index 同期
 - Resources 非対応クライアント向けの `read` Tool
 - MCP 経由の内容を Mindmount への指示として解釈しないこと
 

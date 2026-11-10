@@ -32,7 +32,7 @@ Mindmount は、自分のメモリを AI と共有するためのローカルサ
 - Markdown リンク・Wiki リンクの参照とバックリンク
 - `index watch` によるファイル監視
 - デーモン（Web / MCP HTTP / ファイル監視）
-- MCP Streamable HTTP サーバー（Tools / Resources、stdio は任意）
+- MCP Streamable HTTP サーバー（Tools / Resources）
 - 閲覧専用 Web ビューア
 
 未実装:
@@ -49,12 +49,12 @@ main.rs
   │     ├── mod.rs        clap 定義、コマンド分岐、ロック
   │     └── output.rs     CLI 表示
   ├── daemon/             デーモン（Web / MCP HTTP / 監視）
-  ├── mcp/                MCP サーバー（HTTP、任意の stdio アダプタ）
+  ├── mcp/                MCP サーバー（Streamable HTTP）
   ├── web/                閲覧専用 Web アダプタ
   ├── usecase/            CLI / MCP / Web が共有する操作（出力なし）
   │     ├── mount.rs      マウント登録・一覧・解除
   │     ├── index.rs      index・検索・参照
-  │     └── document.rs   ページの読み書き
+  │     └── document.rs   ページの読み取り
   ├── config/             設定・パス
   │     ├── mod.rs        config.toml、マウント検証
   │     └── paths.rs      XDG パス、ディレクトリ、ロック
@@ -78,17 +78,17 @@ CLI は共有 usecase を直接使い、Unix Socket や管理 API は設けな�
 | `cli/mod.rs` | コマンド、引数、ヘルプの定義、分岐、ロック |
 | `cli/output.rs` | CLI 向けの表示 |
 | `daemon/mod.rs` | デーモン起動、Web と MCP HTTP の統合、監視 |
-| `mcp/mod.rs` | MCP Tools / Resources、HTTP サービス、任意の stdio アダプタ |
+| `mcp/mod.rs` | MCP Tools / Resources、HTTP サービス |
 | `web/mod.rs` | Axum / Askama による閲覧専用ビューア |
 | `usecase/mount.rs` | マウント登録・一覧・解除（出力なし） |
 | `usecase/index.rs` | 再 index・ページ・検索・参照（出力なし） |
-| `usecase/document.rs` | ページの読み書きと楽観的ロック（出力なし） |
+| `usecase/document.rs` | ページの読み取り（出力なし） |
 | `config/mod.rs` | `config.toml`、マウント検証、ノード ID |
 | `config/paths.rs` | XDG パス解決、データディレクトリ、ロック |
 | `core/document.rs` | frontmatter、タイトル、SHA-256、ドメイン型 `Document` |
 | `core/id.rs` | Snowflake ID の発行と永続状態 |
 | `core/reference.rs` | リンク抽出・解決、`ResolvedReference` |
-| `storage/filesystem.rs` | `MountRoot`、パス検証、読み取り、atomic write、走査 |
+| `storage/filesystem.rs` | `MountRoot`、パス検証、読み取り、走査 |
 | `db/mod.rs` | 接続、migration、`Database` と共通エラー |
 | `db/mounts.rs` | マウント登録の同期 |
 | `db/queries.rs` | ドキュメント、参照・バックリンクの読み取り |
@@ -381,25 +381,12 @@ mtime は保存しますが、変更判定には使いません。これによ�
 - `..` を含むパスを拒否
 - 空パスやファイル名を持たないパスを拒否
 - 既存パスは canonicalize し、マウントルート配下か確認
-- 書き込み時は親ディレクトリも canonicalize し、ルート配下か確認
 
 ### 8.2 symlink
 
 - 走査時は symlink をスキップ
 - 読み取り時は symlink 解決後のパスがルート配下か確認
-- 書き込み時は symlink 自体への書き込みを拒否
 - 親ディレクトリ経由の symlink 脱出も拒否
-
-### 8.3 書き込み
-
-内部 API として次を実装済みです。現在の CLI には公開していません。
-
-- `write_atomic`: 同一ディレクトリの一時ファイル + fsync + rename
-- `create_new`: 既存ファイルがある場合は失敗
-- 既存ファイルの permission を引き継ぐ
-
-MCP の `write` Tool（Phase 3）では、`content_hash` による楽観的ロックを
-呼び出し側で行います。
 
 ## 9. CLI 設計
 
@@ -409,21 +396,18 @@ mindmount mount add|list|remove|sync
 mindmount index rescan|watch|pages|search|references|backlinks
 mindmount metadata get|set
 mindmount link add|delete
-mindmount serve
-mindmount mcp
 ```
 
 責務ごとにグループ化することで、トップレベルのコマンド増加を抑えます。
 決定の背景は [DECISIONS.md](DECISIONS.md) の D-002 を参照してください。
 
 `mindmount -p ... -d ...` のルート実行は、マウント登録と index 構築のショートカットです。
-Phase 4 以降は Web ビューアも起動する予定です。
 
 ## 10. Web / MCP の設計方針
 
 ### 10.1 ローカル Web は閲覧専用
 
-ローカル版の Web UI は **viewer** です。`mindmount serve` で起動します。
+ローカル版の Web UI は **viewer** です。デーモンの `mindmount daemon start` で起動します。
 
 - `GET /`、`GET /mounts`、`GET /page/{id}`、`GET /search`、`GET /static/style.css`
 - マウント一覧、Markdown 表示、検索、Markdown リンク、Knowledge Links、バックリンク、DB メタデータ
@@ -443,8 +427,7 @@ Phase 4 以降は Web ビューアも起動する予定です。
 
 ### 10.2 MCP
 
-Rust 公式 SDK `rmcp` を使います。デーモンが Streamable HTTP を `/mcp` で提供し、
-stdio は任意の薄いアダプタ（`mindmount mcp`）として残します。
+Rust 公式 SDK `rmcp` を使います。デーモンが Streamable HTTP を `/mcp` で提供します。
 
 Tools:
 
@@ -452,7 +435,6 @@ Tools:
 - `list`
 - `search`
 - `read`
-- `write`
 - `links`
 - `backlinks`
 - `metadata_get`
@@ -464,13 +446,11 @@ Resources:
 
 - `mindmount://<mount-id>/documents/<document-id>`
 
-`read` は `document_id` または `mount_id` + `path` を受け付けます。`write` も同じ指定方法で、
-既存ファイルの更新には `read` が返した `content_hash` を `expected_hash` として要求します。
-新規作成では `expected_hash` を省略し、既存ファイルを上書きしません。
+`read` は `document_id` または `mount_id` + `path` を受け付けます。
+Mindmount は Markdown を編集しないため、書き込み Tool は提供しません。
 
-MCP サーバーは CLI や `index watch` と同じ `usecase` を使います。書き込み時だけアプリケーション
-ロックを取得して index を同期します。stdio MCP では stdout にログを出さず、ログは stderr に
-限定します。HTTP MCP も同じハンドラを利用します。
+MCP サーバーは CLI や `index watch` と同じ `usecase` を使います。HTTP MCP も同じハンドラを
+利用します。
 
 デーモンは `127.0.0.1` / `::1` にのみ bind し、`daemon start|stop|status|run` で管理します。
 MCP HTTP は `credentials.toml` の Bearer Token を要求し、Web は Host / Origin を検証します。
@@ -483,7 +463,7 @@ Web と MCP は、`usecase` を通じて config / db / index / storage の同じ
 UI とプロトコルの層を分離し、どちらからも同じドメインロジックを使えるようにします。
 
 - Web: 閲覧・検索・参照表示
-- MCP: 読み書き・検索・参照
+- MCP: 読み取り・検索・参照
 - 共通: `usecase`（マウント管理、index、検索、参照）、ファイルアクセス、ID
 
 ## 11. エラー処理とログ
@@ -492,7 +472,7 @@ UI とプロトコルの層を分離し、どちらからも同じドメイン�
 - `id` と `db` は `thiserror` でドメインエラーを定義する
 - index 構築では、1 ファイルの読み取り失敗を警告にして処理を続ける
 - マウント単位の失敗は `index rescan` の最後にまとめて非ゼロ終了する
-- ログは stderr。stdio MCP でも stdout を汚さない
+- ログは stderr
 - `RUST_LOG` でフィルタを変更できる。既定は `mindmount=warn,warn`
 
 終了コード:
@@ -510,13 +490,13 @@ UI とプロトコルの層を分離し、どちらからも同じドメイン�
 - Snowflake: 単調増加、同一ミリ秒の連番、時計逆行、連番枯渇、エポック前、ノード ID 範囲
 - Config: 設定の作成・読み書き、ノード ID の永続化、ネスト・重複・不正値の拒否
 - Document: frontmatter、タイトル優先順、コードフェンス、SHA-256
-- Filesystem: 走査、隠しファイル、symlink、パストラバーサル、atomic write、上書き拒否
+- Filesystem: 走査、隠しファイル、symlink、パストラバーサル、読み取り
 - DB: migration、マウント同期、カスケード削除、upsert/delete、参照の保持
 - Indexer: 追加・更新・削除、内部 ID 維持、frontmatter ID、重複 ID、DB 再構築
 - Reference: Markdown / Wiki リンクの抽出、マウント内の解決
-- Document: ページの読み書き、`content_hash` による楽観的ロック、新規作成
+- Document: ページの読み取り
 - Search: 実ファイルの grep、日本語、文字列 / 正規表現、ファイル名絞り込み、行番号、前後文脈、件数上限
-- MCP: initialize、tools/list、resources/list / read、read / write の stdio 結合テスト
+- MCP: initialize、tools/list、resources/list / read、read の HTTP 結合テスト
 - Daemon: バックグラウンド起動、Web、MCP HTTP の initialize、停止
 - Web: マウント一覧、ページ表示、検索、Host / Origin 拒否、実サーバーの HTTP 応答
 
@@ -544,10 +524,8 @@ cargo fmt --all -- --check
 
 - マウント外アクセス禁止（絶対パス、`..`、symlink）
 - Markdown は外部入力として扱う
-- HTML レンダリング時の XSS 対策（Phase 4）
-- atomic file write と楽観的ロック（MCP write）
+- HTML レンダリング時の XSS 対策
 - MCP HTTP の Bearer Token 認証
-- stdio MCP の stdout にログを出さない
 - MCP から任意のシェルコマンドを実行させない
 - MCP が返す文章を Mindmount 自身への指示として解釈しない
 - ローカル Web は `127.0.0.1` のみに bind し、外部公開しない

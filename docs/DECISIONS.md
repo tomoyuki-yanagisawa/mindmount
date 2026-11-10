@@ -13,11 +13,11 @@
 
 ### 決定
 
-- ローカル版の `mindmount serve` は**読み取り専用のビューア**とする。
+- ローカル版の `mindmount daemon run` は**読み取り専用のビューア**を提供する。
 - ローカル版には Markdown の編集画面、`GET /page/:id/edit`、`POST /page/:id` を設けない。
 - 人間による編集は vim などでファイルを直接変更し、`mindmount index rescan` で index に反映する。
 - ローカル版では Web UI 編集を実装しない。
-- MCP の `write` Tool はローカル版でも提供する（AI からの編集経路は維持する）。
+- Mindmount は文章を編集しないため、MCP にも `write` Tool を提供しない。
 
 ### 影響
 
@@ -45,8 +45,6 @@ mindmount mount add|list|remove|sync
 mindmount index rescan|watch|pages|search|references|backlinks
 mindmount metadata get|set
 mindmount link add|delete
-mindmount serve
-mindmount mcp
 ```
 
 引数だけを指定する `mindmount -p ... -d ...` は、従来どおりマウント登録と index 構築を行う。

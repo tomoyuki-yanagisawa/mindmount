@@ -90,12 +90,10 @@ mindmount metadata get|set
 mindmount link add|delete
 mindmount backup <PATH>
 mindmount version
-mindmount serve
-mindmount mcp
 ```
 
 `daemon` は Web ビューア、MCP Streamable HTTP（`/mcp`）、ファイル監視を1プロセスで提供します。
-`serve` は `daemon run` の別名です。`mcp` は任意の stdio アダプタとして残しています。
+Mindmount は Markdown を編集せず、MCP にも書き込み Tool はありません。
 bind は `127.0.0.1` / `::1` のループバックに限定されます。
 
 ## ローカルデータ

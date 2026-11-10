@@ -67,27 +67,43 @@ impl AppPaths {
 
     /// Holds an advisory lock for the duration of a CLI operation.
     pub fn lock(&self) -> Result<fs::File> {
-        let path = self.config_dir.join("mindmount.lock");
-        let file = fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(&path)
-            .with_context(|| format!("cannot open lock file {}", path.display()))?;
-        file.try_lock().with_context(|| {
-            format!(
-                "cannot lock {}; another Mindmount process may be running",
-                path.display()
-            )
-        })?;
-        Ok(file)
+        acquire_lock(&self.config_dir.join("mindmount.lock"))
+    }
+
+    /// Prevents two daemons from running at the same time.
+    pub fn daemon_lock(&self) -> Result<fs::File> {
+        acquire_lock(&self.config_dir.join("mindmount.daemon.lock"))
+    }
+
+    pub fn daemon_pid_file(&self) -> PathBuf {
+        self.config_dir.join("daemon.pid")
+    }
+
+    pub fn daemon_log_file(&self) -> PathBuf {
+        self.config_dir.join("daemon.log")
     }
 
     pub fn ensure_dirs(&self) -> Result<()> {
         ensure_private_dir(&self.config_dir)?;
         ensure_private_dir(&self.config_dir.join("db"))
     }
+}
+
+fn acquire_lock(path: &Path) -> Result<fs::File> {
+    let file = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .with_context(|| format!("cannot open lock file {}", path.display()))?;
+    file.try_lock().with_context(|| {
+        format!(
+            "cannot lock {}; another Mindmount process may be running",
+            path.display()
+        )
+    })?;
+    Ok(file)
 }
 
 fn ensure_private_dir(path: &Path) -> Result<()> {

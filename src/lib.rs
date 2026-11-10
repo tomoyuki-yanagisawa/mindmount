@@ -1,6 +1,7 @@
 pub mod cli;
 pub mod config;
 pub mod core;
+pub mod daemon;
 pub mod db;
 pub mod index;
 pub mod mcp;

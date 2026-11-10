@@ -731,6 +731,68 @@ fn serve_starts_and_serves_mounts() {
     assert!(response.contains("Notes"), "{response}");
 }
 
+fn http_request(port: u16, request: &str) -> String {
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .unwrap();
+    write!(stream, "{request}").unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    response
+}
+
+fn get_until_ready(port: u16, path: &str, expected: &str) {
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let request =
+            format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n");
+        if std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            let response = http_request(port, &request);
+            if response.contains(expected) {
+                return;
+            }
+        }
+        assert!(Instant::now() < deadline, "daemon did not serve {path}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[test]
+fn daemon_serves_web_and_mcp() {
+    let env = TestEnv::new();
+    assert_success(&env.mount("Notes"));
+    let port = std::net::TcpListener::bind(("127.0.0.1", 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+
+    let start = env.run(&["daemon", "start", "--port", &port.to_string()]);
+    assert_success(&start);
+    assert!(stdout(&start).contains("Started"), "{}", stdout(&start));
+
+    get_until_ready(port, "/mounts", "Notes");
+    let status = env.run(&["daemon", "status"]);
+    assert_success(&status);
+    assert!(stdout(&status).contains("running"), "{}", stdout(&status));
+
+    let body = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#;
+    let request = format!(
+        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let response = http_request(port, &request);
+    assert!(
+        response.contains("protocolVersion") || response.contains("event:"),
+        "{response}"
+    );
+
+    let stop = env.run(&["daemon", "stop"]);
+    assert_success(&stop);
+    assert!(stdout(&stop).contains("Stopped"), "{}", stdout(&stop));
+}
+
 #[test]
 fn metadata_and_knowledge_links_round_trip() {
     let env = TestEnv::new();

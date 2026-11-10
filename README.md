@@ -88,6 +88,8 @@ mindmount mount add|list|remove|sync
 mindmount index rescan|watch|pages|search|references|backlinks
 mindmount metadata get|set
 mindmount link add|delete
+mindmount backup <PATH>
+mindmount version
 mindmount serve
 mindmount mcp
 ```

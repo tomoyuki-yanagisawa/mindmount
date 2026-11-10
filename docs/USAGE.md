@@ -21,10 +21,10 @@ cargo build
 
 ```bash
 # 1. プロジェクト内の notes をマウント
-mindmount storage mount -p ~/Project/app -d ./notes -n "Project notes"
+mindmount mount add -p ~/Project/app -d ./notes -n "Project notes"
 
 # 2. マウントとページを確認
-mindmount storage list
+mindmount mount list
 mindmount index pages
 
 # 3. vim などで Markdown を編集したら index を更新
@@ -37,9 +37,13 @@ mindmount index pages
 ```text
 mindmount daemon start|stop|restart|status|run [--host <HOST>] [--port <PORT>]
 
-mindmount storage mount -p <PATH> -d <PATH> [-n <NAME>]
-mindmount storage list
-mindmount storage unmount <MOUNT_ID>
+mindmount mount add -p <PATH> -d <PATH> [-n <NAME>]
+mindmount mount list
+mindmount mount remove <MOUNT_ID>
+mindmount mount sync <MOUNT_ID> | --all
+
+mindmount backup <PATH>
+mindmount version
 
 mindmount index rescan
 mindmount index watch
@@ -61,9 +65,12 @@ mindmount -p <PATH> -d <PATH> [-n <NAME>] [--host <HOST>] [--port <PORT>]
 | `daemon restart` | デーモンを再起動する |
 | `daemon status` | デーモンの稼働状態を表示する |
 | `daemon run` | デーモンをフォアグラウンドで起動する |
-| `storage mount` | ディレクトリを登録し、index を構築する |
-| `storage list` | 登録済みマウントを一覧表示する |
-| `storage unmount` | マウントを inactive にし、DB データを保持する |
+| `mount add` | ディレクトリを登録し、index を構築する |
+| `mount list` | 登録済みマウントを一覧表示する |
+| `mount remove` | マウントを inactive にし、DB データを保持する |
+| `mount sync` | 指定マウント、または `--all` で全マウントを再同期する |
+| `backup` | SQLite の一貫したバックアップを作成する |
+| `version` | バージョンを表示する |
 | `index rescan` | 全マウントの index を再構築する |
 | `index watch` | ファイルの変更を監視して index を更新する |
 | `index pages` | index 済みページを一覧表示する |
@@ -77,12 +84,12 @@ mindmount -p <PATH> -d <PATH> [-n <NAME>] [--host <HOST>] [--port <PORT>]
 | `serve` | デーモンをフォアグラウンドで起動する（`daemon run` の別名） |
 | `mcp` | 任意の MCP stdio アダプタを起動する |
 
-引数だけの `mindmount -p ... -d ...` は、`storage mount` と同じ登録・index 構築を行います。
+引数だけの `mindmount -p ... -d ...` は、`mount add` と同じ登録・index 構築を行います。
 
-## storage mount
+## mount add
 
 ```bash
-mindmount storage mount -p ~/Project/app -d ./notes -n "Project notes"
+mindmount mount add -p ~/Project/app -d ./notes -n "Project notes"
 ```
 
 ### オプション
@@ -123,10 +130,10 @@ Mounted "Project notes" (245510401681731584)
 index 構築に失敗してもマウント登録は残ります。その場合は
 `mindmount index rescan` で再試行してください。
 
-## storage list
+## mount list
 
 ```bash
-mindmount storage list
+mindmount mount list
 ```
 
 出力:
@@ -176,7 +183,7 @@ ID	MOUNT	PATH	TITLE
 ### 重要: `index pages` はファイルを再走査しない
 
 `index pages` は SQLite の index を読むだけです。ファイルを直接編集しても、
-`index rescan`（または同じディレクトリへの `storage mount` 再実行）をするまで
+`index rescan`（または同じディレクトリへの `mount add` 再実行）をするまで
 表示は更新されません。
 
 ```bash
@@ -268,10 +275,10 @@ Reindexed "Project notes" (245510401681731584): 3 files, 1 added, 1 updated, 1 r
 複数マウントのうち一部が読めない場合、そのマウントのエラーを表示して残りを続行し、
 最後に非ゼロで終了します。
 
-## storage unmount
+## mount remove
 
 ```bash
-mindmount storage unmount 245510401681731584
+mindmount mount remove 245510401681731584
 ```
 
 出力:
@@ -294,7 +301,7 @@ Index metadata and knowledge links were kept inactive.
 mindmount -p ~/Project/app -d ./notes -n "Project notes"
 ```
 
-`storage mount` と同じ登録・index 構築を行います。Phase 4 以降は、同じコマンドで
+`mount add` と同じ登録・index 構築を行います。Phase 4 以降は、同じコマンドで
 読み取り専用 Web ビューアも起動する予定です。現在は次の注意書きを表示します。
 
 ```text
@@ -318,6 +325,8 @@ mindmount daemon run
 - Web: `http://127.0.0.1:3000/`
 - MCP: `http://127.0.0.1:3000/mcp`
 - bind は `127.0.0.1` / `::1` のループバックのみ
+- MCP HTTP は `credentials.toml` の `mcp_token` を
+  `Authorization: Bearer <token>` で要求
 - 二重起動はロックで拒否
 - バックグラウンド起動時のログ: `~/.config/mindmount/daemon.log`
 
@@ -343,6 +352,9 @@ Tools:
 新規作成では `expected_hash` を省略します。
 
 Resources として `mindmount://<mount-id>/documents/<document-id>` も公開します。
+
+デーモンの `/mcp` は `credentials.toml` の `mcp_token` を
+`Authorization: Bearer <token>` で要求します。stdio では認証は不要です。
 
 書き込み時は index が同期されます。stdio ではログを stdout に出さず stderr に限定します。
 
@@ -386,7 +398,7 @@ mindmount index rescan
 mindmount index pages
 ```
 
-同じディレクトリに `storage mount` を再実行しても再同期されます。
+同じディレクトリに `mount add` を再実行しても再同期されます。
 
 ## 対応する Markdown
 
@@ -446,6 +458,7 @@ $XDG_CONFIG_HOME/mindmount/   # 未設定時: ~/.config/mindmount/
 ├── mindmount.daemon.lock     # デーモンの二重起動防止
 ├── daemon.pid                # デーモンの PID
 ├── daemon.log                # バックグラウンド起動時のログ
+├── credentials.toml          # MCP HTTP の Bearer Token
 └── db/
     └── mindmount.sqlite      # 派生 index と DB 独自データ
 ```
@@ -530,7 +543,7 @@ RUST_LOG=mindmount=debug mindmount index rescan
 マウントが未登録、または index が空です。
 
 ```bash
-mindmount storage list
+mindmount mount list
 mindmount index rescan
 ```
 
@@ -544,7 +557,7 @@ mindmount index rescan
 
 ### `mount N is not registered`
 
-`storage list` でマウント ID を確認してください。
+`mount list` でマウント ID を確認してください。
 
 ### `XDG_CONFIG_HOME must be an absolute path`
 

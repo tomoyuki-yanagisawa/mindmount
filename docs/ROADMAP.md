@@ -22,7 +22,7 @@ Web UI での編集は提供しません。
 ### 完了した内容
 
 - CLI 引数とサブコマンド
-  - `storage mount` / `storage list` / `storage unmount`
+  - `mount add` / `mount list` / `mount remove`
   - `index rescan` / `index pages`
   - 引数だけのルート実行
 - マウント管理
@@ -228,7 +228,6 @@ Host / Origin 検証とループバック bind を備えています。
 ## 未解決の設計課題
 
 - grep 検索の文脈行数と結果上限の調整
-- MCP HTTP の認証（現状はループバック + Host / Origin 検証）
 - デーモンのログイン時自動起動
 - 参照の正規化と曖昧性解決
 - frontmatter ID の衝突・移行

@@ -68,6 +68,12 @@ a { color: var(--accent); }
 
 ul.mounts, ul.results, section ul { padding-left: 1.2rem; }
 ul.mounts li, ul.results li, section li { margin: 0.4rem 0; }
+.snippet {
+  margin-top: 0.15rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.9rem;
+  white-space: pre-wrap;
+}
 
 .markdown { overflow-wrap: anywhere; }
 .markdown pre {

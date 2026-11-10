@@ -103,49 +103,6 @@ impl Database {
         )
     }
 
-    /// Searches literal text, using trigram lookup for queries of at least three characters.
-    pub async fn search_documents(
-        &self,
-        query: &str,
-        mount_id: Option<i64>,
-    ) -> Result<Vec<Document>> {
-        let sql = if query.chars().count() >= 3 {
-            "SELECT d.id, d.mount_id, d.relative_path, d.title, d.content_hash, d.modified_at, d.indexed_at
-             FROM document_search s JOIN documents d ON d.id = s.rowid
-             WHERE document_search MATCH ? AND (? IS NULL OR d.mount_id = ?)
-             ORDER BY d.mount_id, d.relative_path"
-        } else {
-            "SELECT d.id, d.mount_id, d.relative_path, d.title, d.content_hash, d.modified_at, d.indexed_at
-             FROM document_search s JOIN documents d ON d.id = s.rowid
-             WHERE (instr(lower(s.title), lower(?1)) > 0 OR instr(lower(s.body), lower(?1)) > 0)
-             AND (?2 IS NULL OR d.mount_id = ?3)
-             ORDER BY d.mount_id, d.relative_path"
-        };
-        let term = if query.chars().count() >= 3 {
-            format!("\"{}\"", query.replace('"', "\"\""))
-        } else {
-            query.to_owned()
-        };
-        let rows = sqlx::query(sql)
-            .bind(term)
-            .bind(mount_id)
-            .bind(mount_id)
-            .fetch_all(&self.pool)
-            .await?;
-        rows.iter().map(map_document).collect()
-    }
-
-    pub async fn unindexed_search_count(&self, mount_id: Option<i64>) -> Result<i64> {
-        Ok(sqlx::query_scalar(
-            "SELECT COUNT(*) FROM documents d LEFT JOIN document_search s ON s.rowid = d.id
-             WHERE (s.rowid IS NULL OR d.content_hash = '') AND (? IS NULL OR d.mount_id = ?)",
-        )
-        .bind(mount_id)
-        .bind(mount_id)
-        .fetch_one(&self.pool)
-        .await?)
-    }
-
     pub async fn links(&self, document_id: i64, backlinks: bool) -> Result<Vec<LinkRow>> {
         let column = if backlinks {
             "r.target_document_id"

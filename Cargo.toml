@@ -30,6 +30,8 @@ walkdir = "2.5"
 axum = "0.8.9"
 askama = "0.16.1"
 ammonia = "4.2.4"
+ignore = "0.4.34"
+regex = "1.13.1"
 
 [dev-dependencies]
 tower = { version = "0.5.3", features = ["util"] }

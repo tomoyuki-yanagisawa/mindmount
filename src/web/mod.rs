@@ -149,11 +149,13 @@ struct MountOption {
     selected: bool,
 }
 
-struct DocumentView {
-    id: i64,
-    title: String,
+struct SearchHitView {
+    linked: bool,
+    url: String,
     mount: String,
     path: String,
+    line: usize,
+    text: String,
 }
 
 #[derive(Template)]
@@ -161,7 +163,7 @@ struct DocumentView {
 struct SearchTemplate {
     query: String,
     mounts: Vec<MountOption>,
-    results: Vec<DocumentView>,
+    results: Vec<SearchHitView>,
     searched: bool,
 }
 
@@ -232,11 +234,6 @@ async fn search_page(
         Vec::new()
     };
 
-    let names: HashMap<i64, String> = config
-        .mounts
-        .iter()
-        .map(|mount| (mount.id, mount.name.clone()))
-        .collect();
     let mounts = config
         .mounts
         .iter()
@@ -248,14 +245,16 @@ async fn search_page(
         .collect();
     let results = results
         .iter()
-        .map(|document| DocumentView {
-            id: document.id,
-            title: document.title.clone(),
-            mount: names
-                .get(&document.mount_id)
-                .cloned()
-                .unwrap_or_else(|| "(unknown)".into()),
-            path: document.relative_path.clone(),
+        .map(|hit| SearchHitView {
+            linked: hit.document_id.is_some(),
+            url: hit
+                .document_id
+                .map(|id| format!("/page/{id}"))
+                .unwrap_or_default(),
+            mount: hit.mount_name.clone(),
+            path: hit.relative_path.clone(),
+            line: hit.line,
+            text: hit.text.clone(),
         })
         .collect();
 

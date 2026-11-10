@@ -23,8 +23,6 @@ pub enum DbError {
     Io(#[from] std::io::Error),
     #[error("invalid timestamp in database: {0}")]
     InvalidTimestamp(i64),
-    #[error("missing search content for document {0}")]
-    MissingContent(i64),
 }
 
 pub type Result<T> = std::result::Result<T, DbError>;
@@ -141,28 +139,9 @@ mod tests {
             }
         }
         database
-            .apply_mount_sync(mount_id, upserts, deletes, bodies, &references, &affected)
+            .apply_mount_sync(mount_id, upserts, deletes, &references, &affected)
             .await
             .unwrap();
-    }
-
-    #[tokio::test]
-    async fn refuses_upserts_without_search_content() {
-        let temp = tempdir().unwrap();
-        let database = Database::open(&temp.path().join("test.sqlite"))
-            .await
-            .unwrap();
-        database
-            .sync_mounts(&[mount(1, &temp.path().join("project/notes"))])
-            .await
-            .unwrap();
-        let document = document(10, 1, "page.md", "Page", "hash");
-        let error = database
-            .apply_mount_sync(1, &[document], &[], &HashMap::new(), &[], &[])
-            .await
-            .unwrap_err();
-        assert!(matches!(error, DbError::MissingContent(10)));
-        assert!(database.documents_for_mount(1).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -183,52 +162,6 @@ mod tests {
         assert!(names.contains(&"mounts".to_string()));
         assert!(names.contains(&"documents".to_string()));
         assert!(names.contains(&"references".to_string()));
-    }
-
-    #[tokio::test]
-    async fn search_migration_requires_rescan_of_existing_documents() {
-        let temp = tempdir().unwrap();
-        let path = temp.path().join("test.sqlite");
-        let database = Database::open(&path).await.unwrap();
-        database
-            .sync_mounts(&[mount(1, &temp.path().join("project/notes"))])
-            .await
-            .unwrap();
-        let document = document(10, 1, "page.md", "Page", "hash");
-        let bodies = HashMap::from([(10, "# Page\n".to_string())]);
-        apply(
-            &database,
-            1,
-            std::slice::from_ref(&document),
-            std::slice::from_ref(&document),
-            &[],
-            &bodies,
-        )
-        .await;
-
-        sqlx::query("DROP TRIGGER document_search_delete")
-            .execute(&database.pool)
-            .await
-            .unwrap();
-        sqlx::query("DROP TRIGGER document_search_update_id")
-            .execute(&database.pool)
-            .await
-            .unwrap();
-        sqlx::query("DROP TABLE document_search")
-            .execute(&database.pool)
-            .await
-            .unwrap();
-        sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 3")
-            .execute(&database.pool)
-            .await
-            .unwrap();
-        database.pool.close().await;
-        let reopened = Database::open(&path).await.unwrap();
-        assert_eq!(reopened.unindexed_search_count(None).await.unwrap(), 1);
-        assert_eq!(
-            reopened.documents_for_mount(1).await.unwrap()[0].content_hash,
-            ""
-        );
     }
 
     #[tokio::test]

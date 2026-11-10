@@ -2,15 +2,16 @@
 
 use std::collections::HashMap;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 
 use crate::config::Config;
 use crate::core::document::Document;
 use crate::core::id::Snowflake;
 use crate::db::queries::LinkRow;
 use crate::db::Database;
-use crate::index::indexer::{self, SyncOutcome};
+use crate::index::indexer::{self, SyncOutcome, SyncReport};
 use crate::search::{self, SearchHit, SearchOptions};
+use crate::storage::filesystem::MountRoot;
 
 const SEARCH_LIMIT: usize = 100;
 
@@ -20,6 +21,20 @@ pub async fn rescan(
     ids: &mut Snowflake,
 ) -> Result<SyncOutcome> {
     indexer::sync_all(config, database, ids).await
+}
+
+pub async fn resync_mount(
+    config: &Config,
+    database: &Database,
+    ids: &mut Snowflake,
+    mount_id: i64,
+) -> Result<SyncReport> {
+    let mount = config
+        .find_by_id(mount_id)
+        .with_context(|| format!("mount {mount_id} is not registered"))?;
+    let root = MountRoot::new(&mount.directory_path)?;
+    database.sync_mounts(&config.mounts).await?;
+    indexer::sync_mount(database, mount_id, &root, ids).await
 }
 
 pub async fn pages(

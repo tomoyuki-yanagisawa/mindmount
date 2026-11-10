@@ -32,6 +32,7 @@ askama = "0.16.1"
 ammonia = "4.2.4"
 ignore = "0.4.34"
 regex = "1.13.1"
+uuid = { version = "1.29.2", features = ["v4"] }
 
 [dev-dependencies]
 tower = { version = "0.5.3", features = ["util"] }

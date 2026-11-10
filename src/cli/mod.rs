@@ -32,9 +32,9 @@ pub struct Cli {
 #[derive(Debug, Subcommand)]
 pub enum Command {
     /// Manage mounted directories.
-    Storage {
+    Mount {
         #[command(subcommand)]
-        command: StorageCommand,
+        command: MountCommand,
     },
     /// Manage the derived index.
     Index {
@@ -56,6 +56,13 @@ pub enum Command {
         #[command(subcommand)]
         command: DaemonCommand,
     },
+    /// Create a consistent SQLite backup.
+    Backup {
+        /// Destination path. Must not already exist.
+        path: PathBuf,
+    },
+    /// Print the version.
+    Version,
     /// Start the daemon in the foreground (web viewer and MCP HTTP).
     Serve(ServerOptions),
     /// Start the optional MCP stdio server.
@@ -111,15 +118,21 @@ pub enum LinkCommand {
 }
 
 #[derive(Debug, Subcommand)]
-pub enum StorageCommand {
+pub enum MountCommand {
     /// Register a directory and build its derived index.
-    Mount(MountOptions),
+    Add(MountOptions),
     /// List registered mounts.
     List,
     /// Remove a mount from the registry. Markdown files are never deleted.
-    Unmount {
-        /// Internal mount id shown by `mindmount storage list`.
+    Remove {
+        /// Internal mount id shown by `mindmount mount list`.
         mount_id: i64,
+    },
+    /// Resynchronize one mount, or all mounts with --all.
+    Sync {
+        mount_id: Option<i64>,
+        #[arg(long)]
+        all: bool,
     },
 }
 
@@ -263,8 +276,8 @@ pub async fn run(cli: Cli) -> Result<()> {
                 cli.server.host, cli.server.port
             );
         }
-        Some(Command::Storage { command }) => match command {
-            StorageCommand::Mount(options) => {
+        Some(Command::Mount { command }) => match command {
+            MountCommand::Add(options) => {
                 let result = mount::register(
                     &mut config,
                     &paths,
@@ -277,14 +290,26 @@ pub async fn run(cli: Cli) -> Result<()> {
                 .await?;
                 output::mount_result(&result);
             }
-            StorageCommand::List => {
+            MountCommand::List => {
                 let rows = mount::list(&config, &database).await?;
                 output::mounts(&rows);
             }
-            StorageCommand::Unmount { mount_id } => {
+            MountCommand::Remove { mount_id } => {
                 let removed = mount::unmount(&mut config, &paths, &database, mount_id).await?;
                 output::unmounted(&removed);
             }
+            MountCommand::Sync { mount_id, all } => match (mount_id, all) {
+                (_, true) => {
+                    let outcome = index_ops::rescan(&config, &database, &mut ids).await?;
+                    output::reindex(&outcome)?;
+                }
+                (Some(mount_id), false) => {
+                    let report =
+                        index_ops::resync_mount(&config, &database, &mut ids, mount_id).await?;
+                    println!("Reindexed mount {mount_id}: {}", report.summary());
+                }
+                (None, false) => bail!("specify a mount id or --all"),
+            },
         },
         Some(Command::Index { command }) => match command {
             IndexCommand::Rescan => {
@@ -356,6 +381,11 @@ pub async fn run(cli: Cli) -> Result<()> {
                 );
             }
         },
+        Some(Command::Backup { path }) => {
+            database.backup(&path).await?;
+            println!("Backed up to {}", path.display());
+        }
+        Some(Command::Version) => println!("mindmount {}", env!("CARGO_PKG_VERSION")),
         Some(Command::Daemon { .. }) => unreachable!("daemon is handled before acquiring the lock"),
         Some(Command::Serve(_)) => unreachable!("serve is handled before acquiring the lock"),
         Some(Command::Mcp) => unreachable!("mcp is handled before acquiring the lock"),

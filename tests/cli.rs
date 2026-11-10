@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use mindmount::config::Config;
+use mindmount::config::{Config, Credentials};
 use tempfile::TempDir;
 
 struct TestEnv {
@@ -70,8 +70,8 @@ impl TestEnv {
 
     fn mount(&self, name: &str) -> Output {
         self.run(&[
-            "storage",
             "mount",
+            "add",
             "-p",
             self.project.to_str().unwrap(),
             "-d",
@@ -298,8 +298,8 @@ fn watch_reindexes_at_start_and_after_atomic_save() {
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let output = env.run(&[
-            "storage",
             "mount",
+            "add",
             "-p",
             env.project.to_str().unwrap(),
             "-d",
@@ -424,7 +424,7 @@ fn searches_japanese_and_tracks_index_changes() {
     assert_success(&env.run(&["index", "rescan"]));
     assert!(stdout(&env.run(&["index", "search", "新しい"])).contains("No matching pages"));
     let mount_id = env.load_config().mounts[0].id.to_string();
-    assert_success(&env.run(&["storage", "unmount", &mount_id]));
+    assert_success(&env.run(&["mount", "remove", &mount_id]));
     assert!(stdout(&env.run(&["index", "search", "architecture"])).contains("No matching pages"));
 }
 
@@ -459,7 +459,7 @@ fn restricts_existing_data_directory_and_database_permissions() {
     fs::set_permissions(&db_dir, fs::Permissions::from_mode(0o755)).unwrap();
     assert_success(&env.mount("Notes"));
     fs::set_permissions(env.database_path(), fs::Permissions::from_mode(0o644)).unwrap();
-    assert_success(&env.run(&["storage", "list"]));
+    assert_success(&env.run(&["mount", "list"]));
     for path in [&data, &db_dir, &env.database_path()] {
         assert_eq!(
             fs::metadata(path).unwrap().permissions().mode() & 0o077,
@@ -499,19 +499,19 @@ fn mount_lists_pages_and_unmount_leaves_files_untouched() {
     assert!(pages.contains("decisions/storage.md"));
     assert!(pages.contains("Architecture"));
 
-    let output = env.run(&["storage", "list"]);
+    let output = env.run(&["mount", "list"]);
     assert_success(&output);
     let mounts = stdout(&output);
     assert!(mounts.contains(&mount.id.to_string()));
     assert!(mounts.contains("Notes"));
 
-    let output = env.run(&["storage", "unmount", &mount.id.to_string()]);
+    let output = env.run(&["mount", "remove", &mount.id.to_string()]);
     assert_success(&output);
     assert!(stdout(&output).contains("left untouched"));
     assert!(env.load_config().mounts.is_empty());
     assert_eq!(snapshot(&env.notes), before);
 
-    let output = env.run(&["storage", "list"]);
+    let output = env.run(&["mount", "list"]);
     assert_success(&output);
     assert!(stdout(&output).contains("No mounts registered."));
 
@@ -545,8 +545,8 @@ fn defaults_the_mount_name_to_the_directory_name() {
     let env = TestEnv::new();
 
     let output = env.run(&[
-        "storage",
         "mount",
+        "add",
         "-p",
         env.project.to_str().unwrap(),
         "-d",
@@ -562,8 +562,8 @@ fn rejects_nested_mounts() {
     assert_success(&env.mount("Notes"));
 
     let output = env.run(&[
-        "storage",
         "mount",
+        "add",
         "-p",
         env.project.to_str().unwrap(),
         "-d",
@@ -583,8 +583,8 @@ fn rejects_directories_outside_the_project() {
     fs::create_dir_all(&outside).unwrap();
 
     let output = env.run(&[
-        "storage",
         "mount",
+        "add",
         "-p",
         env.project.to_str().unwrap(),
         "-d",
@@ -600,8 +600,8 @@ fn rejects_missing_directories() {
     let env = TestEnv::new();
 
     let output = env.run(&[
-        "storage",
         "mount",
+        "add",
         "-p",
         env.project.to_str().unwrap(),
         "-d",
@@ -674,12 +674,12 @@ fn refuses_concurrent_operations_without_modifying_configuration() {
         .open(env.config_home.join("mindmount/mindmount.lock"))
         .unwrap();
     lock.try_lock().unwrap();
-    let output = env.run(&["storage", "list"]);
+    let output = env.run(&["mount", "list"]);
     assert_failure(&output);
     assert!(stderr(&output).contains("another Mindmount process may be running"));
     assert_eq!(fs::read(env.config_path()).unwrap(), before);
     drop(lock);
-    assert_success(&env.run(&["storage", "list"]));
+    assert_success(&env.run(&["mount", "list"]));
 }
 
 #[test]
@@ -782,6 +782,16 @@ fn daemon_serves_web_and_mcp() {
         "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
+    let unauthorized = http_request(port, &request);
+    assert!(unauthorized.starts_with("HTTP/1.1 401"), "{unauthorized}");
+
+    let credentials =
+        Credentials::load(&env.config_home.join("mindmount/credentials.toml")).unwrap();
+    let request = format!(
+        "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        credentials.mcp_token,
+        body.len()
+    );
     let response = http_request(port, &request);
     assert!(
         response.contains("protocolVersion") || response.contains("event:"),
@@ -837,6 +847,36 @@ fn metadata_and_knowledge_links_round_trip() {
     assert!(stdout(&delete).contains("Deleted"));
     let links = env.run(&["index", "references", "100"]);
     assert!(!stdout(&links).contains("depends_on"));
+}
+
+#[test]
+fn backup_and_version_work() {
+    let env = TestEnv::new();
+    assert_success(&env.mount("Notes"));
+    let backup = env.temp.path().join("backup.sqlite");
+
+    let output = env.run(&["backup", backup.to_str().unwrap()]);
+    assert_success(&output);
+    assert!(backup.is_file());
+
+    let output = env.run(&["backup", backup.to_str().unwrap()]);
+    assert_failure(&output);
+
+    let output = env.run(&["version"]);
+    assert_success(&output);
+    assert!(stdout(&output).contains("mindmount"));
+}
+
+#[test]
+fn mount_sync_updates_a_single_mount() {
+    let env = TestEnv::new();
+    assert_success(&env.mount("Notes"));
+    let mount_id = env.load_config().mounts[0].id.to_string();
+
+    fs::write(env.notes.join("index.md"), "# Synced\n").unwrap();
+    let output = env.run(&["mount", "sync", &mount_id]);
+    assert_success(&output);
+    assert!(stdout(&env.run(&["index", "pages"])).contains("Synced"));
 }
 
 #[test]

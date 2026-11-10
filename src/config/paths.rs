@@ -83,6 +83,10 @@ impl AppPaths {
         self.config_dir.join("daemon.log")
     }
 
+    pub fn credentials_file(&self) -> PathBuf {
+        self.config_dir.join("credentials.toml")
+    }
+
     pub fn ensure_dirs(&self) -> Result<()> {
         ensure_private_dir(&self.config_dir)?;
         ensure_private_dir(&self.config_dir.join("db"))

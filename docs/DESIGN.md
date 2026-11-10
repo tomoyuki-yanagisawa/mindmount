@@ -32,10 +32,11 @@ Mindmount は、自分のメモリを AI と共有するためのローカルサ
 - Markdown リンク・Wiki リンクの参照とバックリンク
 - `index watch` によるファイル監視
 - MCP stdio サーバー（Tools / Resources）
+- 閲覧専用 Web ビューア
 
 未実装:
 
-- Web ビューア
+- なし（Phase 5 はリリース作業）
 
 単一ユーザー・ローカル専用です。Web UI での編集は提供しません。
 
@@ -47,6 +48,7 @@ main.rs
   │     ├── mod.rs        clap 定義、コマンド分岐、ロック
   │     └── output.rs     CLI 表示
   ├── mcp/                MCP stdio アダプタ
+  ├── web/                閲覧専用 Web アダプタ
   ├── usecase/            CLI / MCP / Web が共有する操作（出力なし）
   │     ├── mount.rs      マウント登録・一覧・解除
   │     ├── index.rs      index・検索・参照
@@ -62,7 +64,7 @@ main.rs
   ├── index/              走査・index 更新・監視
   └── storage/            マウント配下の安全なファイルアクセス
 
-Phase 4 では web/ を cli/ / mcp/ と同じ階層に追加し、usecase/ を呼ぶ。
+web/ は cli/ / mcp/ と同じ階層で、usecase/ を呼ぶ。
 ```
 
 ### モジュールの責務
@@ -73,6 +75,7 @@ Phase 4 では web/ を cli/ / mcp/ と同じ階層に追加し、usecase/ を�
 | `cli/mod.rs` | コマンド、引数、ヘルプの定義、分岐、ロック |
 | `cli/output.rs` | CLI 向けの表示 |
 | `mcp/mod.rs` | MCP stdio サーバー、Tools、Resources |
+| `web/mod.rs` | Axum / Askama による閲覧専用ビューア |
 | `usecase/mount.rs` | マウント登録・一覧・解除（出力なし） |
 | `usecase/index.rs` | 再 index・ページ・検索・参照（出力なし） |
 | `usecase/document.rs` | ページの読み書きと楽観的ロック（出力なし） |
@@ -89,7 +92,7 @@ Phase 4 では web/ を cli/ / mcp/ と同じ階層に追加し、usecase/ を�
 | `index/indexer.rs` | 走査、差分計算、参照解決、全マウント同期 |
 | `index/watch.rs` | ファイル監視と再走査 |
 
-依存方向は `cli` / `mcp` → `usecase` → `index` / `config` / `db` / `storage` / `core` です。
+依存方向は `cli` / `mcp` / `web` → `usecase` → `index` / `config` / `db` / `storage` / `core` です。
 `db` は `core` のドメイン型だけを使い、Markdown 解析やリンク解決には依存しません。
 SQLite 固有の型は `db` の外へ漏らさず、呼び出し側は `Mount` や `Document` を扱います。
 `usecase` は出力を持たないため、Phase 3 の MCP と Phase 4 の Web から同じ処理を
@@ -367,22 +370,23 @@ Phase 4 以降は Web ビューアも起動する予定です。
 
 ### 10.1 ローカル Web は閲覧専用
 
-ローカル版の Web UI は **viewer** です。
+ローカル版の Web UI は **viewer** です。`mindmount serve` で起動します。
 
-- `GET /`、`GET /mounts`、`GET /page/:id`、`GET /search`、`GET /static/*`
-- Markdown 表示、参照先、バックリンク、検索
-- 編集画面、`GET /page/:id/edit`、`POST /page/:id` は持たない
+- `GET /`、`GET /mounts`、`GET /page/{id}`、`GET /search`、`GET /static/style.css`
+- マウント一覧、Markdown 表示、検索、参照先、バックリンク
+- Markdown 内の解決済みリンクと Wiki リンクは `/page/{id}` に変換
+- 編集画面、`GET /page/{id}/edit`、`POST /page/{id}` は持たない
 - 人間は vim などでファイルを直接編集し、`index rescan` で反映する
-- Web UI での編集は提供しない
+- 検索はサーバー描画の GET フォーム（htmx は使わない）
 
 理由と影響は [DECISIONS.md](DECISIONS.md) の D-001 を参照してください。
 
-閲覧専用でも次は維持します。
+閲覧専用でも次を維持します。
 
-- Markdown → HTML のレンダリングとサニタイズ
+- Markdown → HTML のレンダリングと `ammonia` によるサニタイズ
 - Host / Origin 検証（DNS rebinding 対策）
-- 静的ファイルのバイナリ埋め込み
-- `127.0.0.1` のみの bind
+- CSS を含む静的ファイルの `include_str!` による埋め込み
+- `127.0.0.1` / `::1` のみの bind
 
 ### 10.2 MCP
 
@@ -449,6 +453,7 @@ UI とプロトコルの層を分離し、どちらからも同じドメイン�
 - Reference: Markdown / Wiki リンクの抽出、マウント内の解決
 - Document: ページの読み書き、`content_hash` による楽観的ロック、新規作成
 - MCP: initialize、tools/list、resources/list / read、read / write の stdio 結合テスト
+- Web: マウント一覧、ページ表示、検索、Host / Origin 拒否、実サーバーの HTTP 応答
 
 ### 12.2 統合テスト
 
@@ -492,8 +497,8 @@ cargo fmt --all -- --check
 - frontmatter は簡易 YAML パーサ
 - 日本語の部分文字列検索に trigram を使用する。1〜2 文字の検索は走査する
 - Wiki リンクの解決はマウント内に限定し、同名候補が複数ある場合は未解決とする
-- Web ビューアは未実装
 - MCP は stdio transport のみ
+- Web は閲覧専用で、検索はサーバー描画（部分更新なし）
 - ローカル Web UI は閲覧専用（編集機能なし）
 - 複数プロセス間の index 更新は完全には直列化していない
 - Snowflake のノード ID 衝突を跨端末で完全には防げない

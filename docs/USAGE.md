@@ -63,7 +63,7 @@ mindmount -p <PATH> -d <PATH> [-n <NAME>] [--host <HOST>] [--port <PORT>]
 | `index search` | index 済み Markdown を文字列で検索する |
 | `index references` | ページからのリンクを一覧表示する |
 | `index backlinks` | ページへのリンクを一覧表示する |
-| `serve` | 読み取り専用 Web ビューアを起動する（Phase 4、未実装） |
+| `serve` | 読み取り専用 Web ビューアを起動する |
 | `mcp` | MCP stdio サーバーを起動する |
 
 引数だけの `mindmount -p ... -d ...` は、`storage mount` と同じ登録・index 構築を行います。
@@ -299,9 +299,21 @@ Resources として `mindmount://<mount-id>/documents/<document-id>` も公開�
 
 ```bash
 mindmount serve
+mindmount serve --port 8080
 ```
 
-Phase 4 で**読み取り専用の Web ビューア**として実装予定です。
+**読み取り専用の Web ビューア**を起動します。既定では `127.0.0.1:3000` で待ち受けます。
+bind 先は `127.0.0.1` または `::1` のループバックに限定されます。
+
+表示できるもの:
+
+- マウント一覧（`/`、`/mounts`）
+- ページ本文と参照・バックリンク（`/page/<DOCUMENT_ID>`）
+- 全文検索（`/search`）
+
+Markdown 内の解決済みリンクと Wiki リンクはページ URL に変換されます。
+HTML はレンダリング後にサニタイズされ、CSS はバイナリに埋め込まれています。
+Host / Origin を検証するため、想定外のホスト名や Origin からのアクセスは拒否されます。
 
 ローカル版の Web UI では Markdown を編集しません。人間は vim などでファイルを
 直接編集し、`index rescan` で反映します。Web UI での編集は提供しません。

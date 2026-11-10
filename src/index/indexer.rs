@@ -204,14 +204,7 @@ pub async fn sync_mount(
         resolved_changes(&documents, &previous_documents, &bodies, &changed)
     };
     database
-        .apply_mount_sync(
-            mount_id,
-            &upserts,
-            &deletes,
-            &bodies,
-            &references,
-            &affected,
-        )
+        .apply_mount_sync(mount_id, &upserts, &deletes, &references, &affected)
         .await?;
 
     Ok(report)
@@ -413,10 +406,9 @@ mod tests {
         let id = document.id;
         document.title = "**Title**".into();
         document.content_hash.clear(); // The title migration marks old rows for refresh.
-        let bodies = HashMap::from([(id, "# **Title**\n".to_string())]);
         fixture
             .database
-            .apply_mount_sync(1, &[document], &[], &bodies, &[], &[id])
+            .apply_mount_sync(1, &[document], &[], &[], &[id])
             .await
             .unwrap();
 

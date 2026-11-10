@@ -6,6 +6,7 @@ use crate::config::{Config, Mount};
 use crate::core::document::Document;
 use crate::db::queries::LinkRow;
 use crate::index::indexer::SyncOutcome;
+use crate::search::SearchHit;
 use crate::usecase::mount::{MountResult, MountRow};
 
 pub fn mount_result(result: &MountResult) {
@@ -60,6 +61,21 @@ pub fn page_list(config: &Config, documents: &[Document], empty: &str) {
         println!(
             "{}\t{}\t{}\t{}",
             document.id, name, document.relative_path, document.title
+        );
+    }
+}
+
+pub fn search_hits(hits: &[SearchHit]) {
+    if hits.is_empty() {
+        println!("No matching pages.");
+        return;
+    }
+
+    println!("MOUNT\tPATH\tLINE\tTEXT");
+    for hit in hits {
+        println!(
+            "{}\t{}\t{}\t{}",
+            hit.mount_name, hit.relative_path, hit.line, hit.text
         );
     }
 }

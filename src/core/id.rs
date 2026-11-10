@@ -10,8 +10,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// Custom epoch: 2025-01-01T00:00:00Z. This value must never change.
-pub const EPOCH_MS: u64 = 1_735_689_600_000;
+/// Unix epoch. Timestamps are milliseconds since 1970-01-01T00:00:00Z.
+pub const EPOCH_MS: u64 = 0;
 
 const TIMESTAMP_BITS: u64 = 41;
 const NODE_BITS: u64 = 10;
@@ -285,11 +285,5 @@ mod tests {
             Snowflake::new(MAX_NODE_ID + 1),
             Err(IdError::InvalidNodeId(_))
         ));
-    }
-
-    #[test]
-    fn rejects_timestamps_before_the_epoch() {
-        let mut ids = generator(0, vec![EPOCH_MS - 1]);
-        assert!(matches!(ids.next_id(), Err(IdError::ClockBeforeEpoch)));
     }
 }

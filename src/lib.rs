@@ -4,6 +4,7 @@ pub mod core;
 pub mod db;
 pub mod index;
 pub mod mcp;
+pub mod search;
 pub mod storage;
 pub mod usecase;
 pub mod web;

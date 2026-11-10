@@ -22,7 +22,7 @@ Phase 1（CLI / Storage）、Phase 2（検索・参照・監視）、Phase 3（M
 | Phase | 内容 | 状態 |
 |---|---|---|
 | 1 | CLI / Storage / 基本 index | 実装済み |
-| 2 | ファイル監視、全文検索、参照、バックリンク | 実装済み |
+| 2 | ファイル監視、grep 検索、参照、バックリンク | 実装済み |
 | 3 | MCP サーバー | 実装済み |
 | 4 | Web ビューア（閲覧専用） | 実装済み |
 | 5 | リリース | 未着手 |
@@ -105,13 +105,13 @@ $XDG_CONFIG_HOME/mindmount/   # 未設定時: ~/.config/mindmount/
 Markdown ファイルはマウント先にそのまま残ります。マウントや index 構築で
 既存ファイルを書き換えることはありません。`storage unmount` も Markdown を
 削除せず、設定と派生 index だけを削除します。
-全文検索のため、SQLite の派生 index に Markdown の内容が保存されます。
+検索は実ファイルを直接 grep するため、SQLite に Markdown の本文は保存されません。
 
 ## ID
 
 マウント ID とドキュメント ID には Snowflake 互換の 63bit 整数を使います。
 
-- 41bit: 2025-01-01T00:00:00Z からのミリ秒
+- 41bit: Unix エポック（1970-01-01T00:00:00Z）からのミリ秒
 - 10bit: `config.toml` に永続化するノード ID
 - 12bit: 同一ミリ秒内の連番
 

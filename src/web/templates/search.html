@@ -17,10 +17,11 @@
   <p class="muted">一致するページはありません。</p>
   {% else %}
   <ul class="results">
-    {% for document in results %}
+    {% for hit in results %}
     <li>
-      <a href="/page/{{ document.id }}">{{ document.title }}</a>
-      <span class="muted">{{ document.mount }} / {{ document.path }}</span>
+      {% if hit.linked %}<a href="{{ hit.url }}">{{ hit.path }}:{{ hit.line }}</a>{% else %}{{ hit.path }}:{{ hit.line }}{% endif %}
+      <span class="muted">{{ hit.mount }}</span>
+      <div class="snippet">{{ hit.text }}</div>
     </li>
     {% endfor %}
   </ul>

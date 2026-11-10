@@ -1,5 +1,7 @@
 //! Index and query operations shared by the CLI, MCP, and web layers.
 
+use std::collections::HashMap;
+
 use anyhow::{bail, Result};
 
 use crate::config::Config;
@@ -8,6 +10,9 @@ use crate::core::id::Snowflake;
 use crate::db::queries::LinkRow;
 use crate::db::Database;
 use crate::index::indexer::{self, SyncOutcome};
+use crate::search::{self, SearchHit, SearchOptions};
+
+const SEARCH_LIMIT: usize = 100;
 
 pub async fn rescan(
     config: &Config,
@@ -38,8 +43,8 @@ pub async fn search(
     database: &Database,
     query: &str,
     mount_id: Option<i64>,
-) -> Result<Vec<Document>> {
-    if query.is_empty() {
+) -> Result<Vec<SearchHit>> {
+    if query.trim().is_empty() {
         bail!("search query must not be empty");
     }
     if let Some(id) = mount_id {
@@ -47,15 +52,31 @@ pub async fn search(
             bail!("mount {} is not registered", id);
         }
     }
-    database.sync_mounts(&config.mounts).await?;
-    let missing = database.unindexed_search_count(mount_id).await?;
-    if missing > 0 {
-        bail!("{missing} pages are not searchable yet; run `mindmount index rescan`");
+
+    let mut hits = search::search(
+        config,
+        SearchOptions {
+            query,
+            mount_id,
+            limit: SEARCH_LIMIT,
+        },
+    )?;
+    let documents = database.list_documents(mount_id).await?;
+    let ids: HashMap<(i64, &str), i64> = documents
+        .iter()
+        .map(|document| {
+            (
+                (document.mount_id, document.relative_path.as_str()),
+                document.id,
+            )
+        })
+        .collect();
+    for hit in &mut hits {
+        hit.document_id = ids
+            .get(&(hit.mount_id, hit.relative_path.as_str()))
+            .copied();
     }
-    database
-        .search_documents(query, mount_id)
-        .await
-        .map_err(Into::into)
+    Ok(hits)
 }
 
 pub async fn links(
@@ -67,10 +88,6 @@ pub async fn links(
     database.sync_mounts(&config.mounts).await?;
     if !database.document_exists(document_id).await? {
         bail!("page {} is not indexed", document_id);
-    }
-    let missing = database.unindexed_search_count(None).await?;
-    if missing > 0 {
-        bail!("{missing} pages need indexing; run `mindmount index rescan`");
     }
     database
         .links(document_id, backlinks)

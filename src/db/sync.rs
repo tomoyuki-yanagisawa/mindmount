@@ -1,26 +1,22 @@
 //! Applies one mount's derived index changes in a single transaction.
 
-use std::collections::HashMap;
-
 use crate::core::document::Document;
 use crate::core::reference::ResolvedReference;
 
-use super::{Database, DbError, Result};
+use super::{Database, Result};
 
 impl Database {
     /// Replaces one mount's changed documents and its references in a single
     /// transaction. Each changed file is replaced as a unit; unchanged rows are
     /// left alone.
     ///
-    /// `bodies` must contain the current Markdown for every upserted document
-    /// and is used to populate the full-text index. `references` holds the new
-    /// links for `affected_sources`, the pages whose links must be rewritten.
+    /// `references` holds the new links for `affected_sources`, the pages whose
+    /// links must be rewritten.
     pub(crate) async fn apply_mount_sync(
         &self,
         mount_id: i64,
         upserts: &[Document],
         deletes: &[String],
-        bodies: &HashMap<i64, String>,
         references: &[ResolvedReference],
         affected_sources: &[i64],
     ) -> Result<()> {
@@ -53,10 +49,6 @@ impl Database {
 
         for document in upserts {
             debug_assert_eq!(document.mount_id, mount_id);
-            let body = bodies
-                .get(&document.id)
-                .ok_or(DbError::MissingContent(document.id))?;
-
             sqlx::query(
                 "INSERT INTO documents
                     (id, mount_id, relative_path, title, content_hash, modified_at, indexed_at)
@@ -71,17 +63,6 @@ impl Database {
             .bind(document.indexed_at.timestamp_millis())
             .execute(&mut *transaction)
             .await?;
-
-            sqlx::query("DELETE FROM document_search WHERE rowid = ?")
-                .bind(document.id)
-                .execute(&mut *transaction)
-                .await?;
-            sqlx::query("INSERT INTO document_search (rowid, title, body) VALUES (?, ?, ?)")
-                .bind(document.id)
-                .bind(&document.title)
-                .bind(body)
-                .execute(&mut *transaction)
-                .await?;
         }
 
         // Only pages whose own links changed, whose target was replaced, or

@@ -180,18 +180,27 @@ impl Mindmount {
             .collect::<Vec<_>>())))
     }
 
-    #[tool(description = "Search Markdown by literal text.")]
+    #[tool(description = "Search Markdown by literal text and return matching lines.")]
     async fn search(
         &self,
         Parameters(args): Parameters<SearchArgs>,
     ) -> Result<Json<Value>, ErrorData> {
         let config = self.config()?;
-        let documents = index_ops::search(&config, self.database(), &args.query, args.mount_id)
+        let hits = index_ops::search(&config, self.database(), &args.query, args.mount_id)
             .await
             .map_err(internal)?;
-        Ok(Json(json!(documents
+        Ok(Json(json!(hits
             .iter()
-            .map(document_json)
+            .map(|hit| json!({
+                "document_id": hit.document_id,
+                "mount_id": hit.mount_id,
+                "mount": hit.mount_name,
+                "path": hit.relative_path,
+                "line": hit.line,
+                "text": hit.text,
+                "before": hit.before,
+                "after": hit.after,
+            }))
             .collect::<Vec<_>>())))
     }
 

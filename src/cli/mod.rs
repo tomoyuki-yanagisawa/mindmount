@@ -219,8 +219,8 @@ pub async fn run(cli: Cli) -> Result<()> {
                 output::page_list(&config, &documents, "No pages indexed.");
             }
             IndexCommand::Search { query, mount_id } => {
-                let documents = index_ops::search(&config, &database, &query, mount_id).await?;
-                output::page_list(&config, &documents, "No matching pages.");
+                let hits = index_ops::search(&config, &database, &query, mount_id).await?;
+                output::search_hits(&hits);
             }
             IndexCommand::References { document_id } => {
                 let links = index_ops::links(&config, &database, document_id, false).await?;

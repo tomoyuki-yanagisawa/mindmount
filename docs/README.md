@@ -26,12 +26,13 @@ Mindmount はローカルファーストの OSS プロジェクトです。自�
 - SQLite による派生インデックス
 - Snowflake ID
 - Markdown の走査、タイトル抽出、内容ハッシュ、差分反映
-- `index rescan` による再インデックス
+- `mount sync --all` による再インデックス
 - `index pages` によるページ一覧
 - `index search` による実ファイルの grep 検索
 - `index references` / `index backlinks` による参照一覧
-- `index watch` によるファイル監視と自動再走査
-- デーモン（Web ビューア、MCP Streamable HTTP、ファイル監視）
+- デーモンによるファイル監視と自動再走査
+- デーモン（Web ビューア、MCP Streamable HTTP、CLI HTTP API、ファイル監視）
+- CLI HTTP API（`/api/*`、Bearer 認証、`reqwest` クライアント）
 - MCP Tools（`mounts` / `list` / `search` / `read` / `links` / `backlinks` / `metadata_get` / `metadata_set` / `link_add` / `link_delete`）
 - MCP Resources（`mindmount://<mount-id>/documents/<document-id>`）
 - 閲覧専用 Web ビューア（マウント一覧、ページ、検索、参照・バックリンク）

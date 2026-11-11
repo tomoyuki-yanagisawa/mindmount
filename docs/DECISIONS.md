@@ -15,7 +15,7 @@
 
 - ローカル版の `mindmount daemon run` は**読み取り専用のビューア**を提供する。
 - ローカル版には Markdown の編集画面、`GET /page/:id/edit`、`POST /page/:id` を設けない。
-- 人間による編集は vim などでファイルを直接変更し、`mindmount index rescan` で index に反映する。
+- 人間による編集は vim などでファイルを直接変更し、デーモンの監視が index に反映する。
 - ローカル版では Web UI 編集を実装しない。
 - Mindmount は文章を編集しないため、MCP にも `write` Tool を提供しない。
 
@@ -42,9 +42,11 @@
 ```text
 mindmount daemon start|stop|restart|status|run
 mindmount mount add|list|remove|sync
-mindmount index rescan|watch|pages|search|references|backlinks
+mindmount index pages|search|references|backlinks
 mindmount metadata get|set
 mindmount link add|delete
+mindmount backup <PATH>
+mindmount version
 ```
 
 引数だけを指定する `mindmount -p ... -d ...` は、従来どおりマウント登録と index 構築を行う。
@@ -75,3 +77,28 @@ mindmount link add|delete
 - Phase 2 の index 整備は、MCP とビューアを支える土台として位置づける。
 - Phase 3（MCP）と Phase 4（ビューア）をローカル版の中心機能として仕上げる。
 - Web 編集は対象外とし、閲覧体験の向上に集中する。
+
+## D-004: CLI の通常操作はデーモンの HTTP API を経由する
+
+- 日付: 2026-11-12
+- 状態: Accepted
+
+### 背景
+
+- DB の書き込みをデーモンだけに限定すると、ファイル監視と DB 更新の競合を避けられる。
+- CLI が SQLite を直接開くと、デーモン停止中でも操作できてしまい、監視やロックの前提が崩れる。
+- v0.11 は CLI の HTTP API 経由と、停止時の明確なエラーを求めている。
+
+### 決定
+
+- `daemon` と `version` / `help` 以外の CLI 操作は `/api/*` を使う。
+- CLI は `daemon.endpoint` から接続先、`credentials.toml` から Bearer Token を読む。
+- デーモン停止時は `Mindmount daemon is not running.` で失敗し、自動起動しない。
+- CLI は SQLite へフォールバックしない。
+- 状態変更 API とファイル監視は、デーモン内の書き込みロックで直列化する。
+
+### 影響
+
+- CLI の通常操作には `mindmount daemon start` が必要になる。
+- `index watch` は廃止し、監視はデーモンに一本化する。`index rescan` は `mount sync --all` に統合する。
+- 統合テストは各テスト用のデーモンを起動し、HTTP API 経由で CLI を検証する。

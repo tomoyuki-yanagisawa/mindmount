@@ -30,7 +30,7 @@ Mindmount は、自分のメモリを AI と共有するためのローカルサ
 - ページ一覧
 - 実ファイルへの grep 検索（本文 index なし）
 - Markdown リンク・Wiki リンクの参照とバックリンク
-- `index watch` によるファイル監視
+- デーモンによるファイル監視
 - デーモン（Web / MCP HTTP / ファイル監視）
 - MCP Streamable HTTP サーバー（Tools / Resources）
 - 閲覧専用 Web ビューア
@@ -48,10 +48,11 @@ main.rs
   ├── cli/                CLI アダプタ
   │     ├── mod.rs        clap 定義、コマンド分岐、ロック
   │     └── output.rs     CLI 表示
-  ├── daemon/             デーモン（Web / MCP HTTP / 監視）
+  ├── api/                 CLI 用 HTTP API（`/api/*`）
+  ├── daemon/             デーモン（Web / MCP HTTP / API / 監視）
   ├── mcp/                MCP サーバー（Streamable HTTP）
   ├── web/                閲覧専用 Web アダプタ
-  ├── usecase/            CLI / MCP / Web が共有する操作（出力なし）
+  ├── usecase/            CLI API / MCP / Web が共有する操作（出力なし）
   │     ├── mount.rs      マウント登録・一覧・解除
   │     ├── index.rs      index・検索・参照
   │     └── document.rs   ページの読み取り
@@ -66,8 +67,8 @@ main.rs
   ├── index/              走査・index 更新・監視
   └── storage/            マウント配下の安全なファイルアクセス
 
-daemon/ は web/ と mcp/ を同じ Axum サーバーに載せ、index/watch を起動する。
-CLI は共有 usecase を直接使い、Unix Socket や管理 API は設けない。
+daemon/ は web/、mcp/、api/ を同じ Axum サーバーに載せ、index/watch を起動する。
+CLI はデーモンの HTTP API だけを使い、SQLite を直接開かない。API は `usecase` を共有する。
 ```
 
 ### モジュールの責務
@@ -75,9 +76,11 @@ CLI は共有 usecase を直接使い、Unix Socket や管理 API は設けな�
 | モジュール | 責務 |
 |---|---|
 | `main.rs` | ログ初期化、CLI パース、`cli::run` の呼び出し |
-| `cli/mod.rs` | コマンド、引数、ヘルプの定義、分岐、ロック |
+| `cli/mod.rs` | コマンド、引数、ヘルプの定義、HTTP クライアントへの分岐 |
+| `cli/client.rs` | デーモン API の HTTP クライアントと接続エラー |
 | `cli/output.rs` | CLI 向けの表示 |
-| `daemon/mod.rs` | デーモン起動、Web と MCP HTTP の統合、監視 |
+| `daemon/mod.rs` | デーモン起動、Web / MCP HTTP / API の統合、監視 |
+| `api/mod.rs` | CLI 用 HTTP API、Bearer 認証、JSON エラー |
 | `mcp/mod.rs` | MCP Tools / Resources、HTTP サービス |
 | `web/mod.rs` | Axum / Askama による閲覧専用ビューア |
 | `usecase/mount.rs` | マウント登録・一覧・解除（出力なし） |
@@ -96,11 +99,10 @@ CLI は共有 usecase を直接使い、Unix Socket や管理 API は設けな�
 | `index/indexer.rs` | 走査、差分計算、参照解決、全マウント同期 |
 | `index/watch.rs` | ファイル監視と再走査 |
 
-依存方向は `cli` / `daemon` → `web` / `mcp`、`web` / `mcp` → `usecase` → `index` / `config` / `db` / `storage` / `core` です。
+依存方向は `cli` → `api`、`daemon` → `web` / `mcp` / `api`、`web` / `mcp` / `api` → `usecase` → `index` / `config` / `db` / `storage` / `core` です。
 `db` は `core` のドメイン型だけを使い、Markdown 解析やリンク解決には依存しません。
 SQLite 固有の型は `db` の外へ漏らさず、呼び出し側は `Mount` や `Document` を扱います。
-`usecase` は出力を持たないため、Phase 3 の MCP と Phase 4 の Web から同じ処理を
-再利用できます。
+`usecase` は出力を持たないため、CLI API・MCP・Web から同じ処理を再利用できます。
 
 ## 4. データフロー
 
@@ -124,7 +126,7 @@ mount add
 ### 4.2 index 更新
 
 ```text
-index rescan / index watch / mount add
+watcher / mount add / mount sync
   ├── config.toml を読み込む
   ├── DB の mounts を config に同期（削除されたマウントも反映）
   └── 各マウントについて
@@ -144,7 +146,7 @@ index rescan / index watch / mount add
 - Markdown 解析の変更に伴う migration は、既存のハッシュを無効化して次回 rescan でタイトルを更新する
 
 通常は、変更されたファイルと、その変更によってリンク解決が変わるページだけを更新します。
-取りこぼしが疑われる場合や、DB を作り直したい場合は `index rescan` で全体を再構築できます。
+取りこぼしが疑われる場合や、DB を作り直したい場合は `mount sync --all` で全体を再構築できます。
 
 読み取りに失敗したファイル（権限エラーなど）は、既存の index を削除せずスキップします。
 そのページへのリンク解決も維持し、他のページのバックリンクを失いません。
@@ -160,8 +162,8 @@ index pages
   └── documents を query して表示
 ```
 
-`index pages` は Markdown を走査しません。ファイル変更を反映するには
-`index rescan` が必要です。
+`index pages` は Markdown を走査しません。ファイル変更はデーモンの監視が反映します。
+手動で反映する場合は `mount sync --all` を使います。
 
 ## 5. 永続データと派生データ
 
@@ -179,7 +181,7 @@ index pages
 削除せず `is_active = 0` にし、文書・メタデータ・Knowledge Links を保持します。
 同じディレクトリを再登録すると、同じマウント ID で再有効化できます。
 
-DB 独自のメタデータと Knowledge Links は再生成できません。`index rescan` で作り直せるのは
+DB 独自のメタデータと Knowledge Links は再生成できません。`mount sync --all` で作り直せるのは
 派生 index だけです。ファイルが消えた文書も削除せず `missing_at` を記録し、孤立した文書を許容します。
 
 ### 5.2 SQLite スキーマ
@@ -264,7 +266,7 @@ CREATE TABLE knowledge_links (
 
 - マウント一覧の同期は 1 トランザクション。
 - 1 マウント分の index 更新は 1 トランザクション。
-- 複数マウントの `index rescan` はマウントごとに独立して適用する。
+- 複数マウントの再同期はマウントごとに独立して適用する。
 
 途中で失敗したマウントの index はロールバックされ、他のマウントは処理を続けます。
 
@@ -311,7 +313,7 @@ CREATE TABLE knowledge_links (
 
 - Mindmount が作成する Markdown には frontmatter の `id` を付与する想定
 - 既存 Markdown に `id` がなければ内部 Snowflake ID を割り当てる
-- 内部 ID は `index rescan` で内容が変わっても維持する
+- 内部 ID は再同期で内容が変わっても維持する
 - DB 再構築後の永続性は保証しない
 - 恒久的な参照には相対パスを使い、安定 ID が必要な場合は frontmatter に `id` を書く
 
@@ -393,14 +395,19 @@ mtime は保存しますが、変更判定には使いません。これによ�
 ```text
 mindmount daemon start|stop|restart|status|run
 mindmount mount add|list|remove|sync
-mindmount index rescan|watch|pages|search|references|backlinks
+mindmount index pages|search|references|backlinks
 mindmount metadata get|set
 mindmount link add|delete
+mindmount backup <PATH>
+mindmount version
 ```
 
 責務ごとにグループ化することで、トップレベルのコマンド増加を抑えます。
 決定の背景は [DECISIONS.md](DECISIONS.md) の D-002 を参照してください。
 
+`daemon` 以外のコマンドはデーモンの HTTP API を使います。デーモンが停止している場合は
+接続エラーで失敗し、SQLite へ直接フォールバックしません。接続先は
+`daemon.endpoint`、トークンは `credentials.toml` から読み込みます。
 `mindmount -p ... -d ...` のルート実行は、マウント登録と index 構築のショートカットです。
 
 ## 10. Web / MCP の設計方針
@@ -413,7 +420,7 @@ mindmount link add|delete
 - マウント一覧、Markdown 表示、検索、Markdown リンク、Knowledge Links、バックリンク、DB メタデータ
 - Markdown 内の解決済みリンクと Wiki リンクは `/page/{id}` に変換
 - 編集画面、`GET /page/{id}/edit`、`POST /page/{id}` は持たない
-- 人間は vim などでファイルを直接編集し、`index rescan` で反映する
+- 人間は vim などでファイルを直接編集し、デーモンの監視が反映する
 - 検索はサーバー描画の GET フォーム（htmx は使わない）
 
 理由と影響は [DECISIONS.md](DECISIONS.md) の D-001 を参照してください。
@@ -449,21 +456,50 @@ Resources:
 `read` は `document_id` または `mount_id` + `path` を受け付けます。
 Mindmount は Markdown を編集しないため、書き込み Tool は提供しません。
 
-MCP サーバーは CLI や `index watch` と同じ `usecase` を使います。HTTP MCP も同じハンドラを
-利用します。
+MCP サーバーは API や Web と同じ `usecase` を使います。
 
 デーモンは `127.0.0.1` / `::1` にのみ bind し、`daemon start|stop|status|run` で管理します。
-MCP HTTP は `credentials.toml` の Bearer Token を要求し、Web は Host / Origin を検証します。
-CLI はデーモンを必須にせず、同じ usecase を直接使います。デーモンは設定ファイルの変更を
+MCP HTTP と CLI API は `credentials.toml` の Bearer Token を要求し、Web は Host / Origin を
+検証します。CLI は API 経由で操作し、DB を直接開きません。デーモンは設定ファイルの変更を
 監視してマウントを追従します。
 
-### 10.3 共通コア
+### 10.3 HTTP API
 
-Web と MCP は、`usecase` を通じて config / db / index / storage の同じコアを共有します。
+CLI 用の JSON API を `/api/*` に置きます。管理・検索・文書・メタデータ・Knowledge Links を
+提供し、Markdown を編集・削除する API は持ちません。
+
+```text
+GET    /api/admin/status
+GET    /api/admin/mounts
+POST   /api/admin/mounts
+POST   /api/admin/mounts/sync
+DELETE /api/admin/mounts/:id
+POST   /api/admin/mounts/:id/sync
+POST   /api/admin/backup
+
+GET    /api/search
+GET    /api/documents
+GET    /api/documents/:id
+GET    /api/documents/:id/links
+GET    /api/documents/:id/backlinks
+GET    /api/documents/:id/metadata
+PUT    /api/documents/:id/metadata/:key
+DELETE /api/documents/:id/metadata/:key
+POST   /api/knowledge-links
+DELETE /api/knowledge-links/:id
+```
+
+状態変更と DB 操作はデーモン内の書き込みロックで直列化し、ファイル監視と競合させません。
+エラーは `{ "error": "..." }` で返します。
+
+### 10.4 共通コア
+
+Web、MCP、CLI API は、`usecase` を通じて config / db / index / storage の同じコアを共有します。
 UI とプロトコルの層を分離し、どちらからも同じドメインロジックを使えるようにします。
 
 - Web: 閲覧・検索・参照表示
 - MCP: 読み取り・検索・参照
+- CLI API: 管理・検索・参照・メタデータ更新
 - 共通: `usecase`（マウント管理、index、検索、参照）、ファイルアクセス、ID
 
 ## 11. エラー処理とログ
@@ -471,7 +507,7 @@ UI とプロトコルの層を分離し、どちらからも同じドメイン�
 - アプリケーション境界では `anyhow` で文脈を付与する
 - `id` と `db` は `thiserror` でドメインエラーを定義する
 - index 構築では、1 ファイルの読み取り失敗を警告にして処理を続ける
-- マウント単位の失敗は `index rescan` の最後にまとめて非ゼロ終了する
+- マウント単位の失敗は `mount sync --all` の最後にまとめて非ゼロ終了する
 - ログは stderr
 - `RUST_LOG` でフィルタを変更できる。既定は `mindmount=warn,warn`
 
@@ -497,20 +533,23 @@ UI とプロトコルの層を分離し、どちらからも同じドメイン�
 - Document: ページの読み取り
 - Search: 実ファイルの grep、日本語、文字列 / 正規表現、ファイル名絞り込み、行番号、前後文脈、件数上限
 - MCP: initialize、tools/list、resources/list / read、read の HTTP 結合テスト
+- API: Bearer 認証、管理・検索・文書・メタデータ・Knowledge Links
 - Daemon: バックグラウンド起動、Web、MCP HTTP の initialize、停止
 - Web: マウント一覧、ページ表示、検索、Host / Origin 拒否、実サーバーの HTTP 応答
 
 ### 12.2 統合テスト
 
-`tests/cli.rs` で実バイナリを起動し、次を確認します。
+`tests/cli.rs` で実バイナリとデーモンを起動し、次を確認します。
 
+- デーモン停止時の CLI エラー
 - マウント → 一覧 → ページ → 解除
 - 既存 Markdown が変更されないこと
 - 重複マウントの冪等性
 - ネスト・プロジェクト外・存在しないディレクトリの拒否
-- DB 削除後の `index rescan`
+- DB 削除後の再起動と再同期
+- ファイル監視による自動反映
 - ルート実行とヘルプ
-- 未実装コマンドのフェーズ表示
+- CLI / API / MCP の Bearer 認証
 
 ### 12.3 実行
 
@@ -525,7 +564,7 @@ cargo fmt --all -- --check
 - マウント外アクセス禁止（絶対パス、`..`、symlink）
 - Markdown は外部入力として扱う
 - HTML レンダリング時の XSS 対策
-- MCP HTTP の Bearer Token 認証
+- MCP HTTP と CLI API の Bearer Token 認証
 - MCP から任意のシェルコマンドを実行させない
 - MCP が返す文章を Mindmount 自身への指示として解釈しない
 - ローカル Web は `127.0.0.1` のみに bind し、外部公開しない
@@ -535,8 +574,8 @@ cargo fmt --all -- --check
 
 ### 制約
 
-- `index watch` を起動していない場合、外部編集は `index rescan` が必要
-- `index rescan` は毎回全ファイルを走査する（ローカル MVP では許容）
+- デーモンが停止していると CLI の通常操作は失敗する
+- `mount sync --all` は毎回全ファイルを走査する（ローカル MVP では許容）
 - index は Markdown より遅れて更新され得る。監視と 30 秒ごとの再走査で最終的に整合する
 - frontmatter は簡易 YAML パーサ
 - 検索は実ファイルへの grep。結果は行単位で、履歴 index は持たない

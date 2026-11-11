@@ -13,6 +13,7 @@ Web UI での編集は提供しません。
 | 2 | ファイル監視、grep 検索、参照、バックリンク | 実装済み |
 | 3 | MCP サーバー | 実装済み |
 | 4 | Web ビューア（閲覧専用） | 実装済み |
+| 4.5 | CLI HTTP API | 実装済み |
 | 5 | リリース | 未着手 |
 
 ローカル版は、MCP 連携と人間用の読み取り専用ビューアを中心に据えます。
@@ -89,7 +90,7 @@ Web UI での編集は提供しません。
 - マウント内のリンク解決、曖昧・未解決リンクの記録（実装済み）
 - `markdown_links` / `knowledge_links` / `document_metadata`（実装済み）
 - バックリンクと Knowledge Links の表示（実装済み）
-- 変更ファイルと影響する参照だけを差分更新（実装済み。全体再構築は `index rescan`）
+- 変更ファイルと影響する参照だけを差分更新（実装済み。全体再構築は `mount sync --all`）
 - マウント解除は inactive、ファイル消失は missing として保持（実装済み）
 - `index search`、`index references`、`index backlinks`（実装済み）
 - パーセントエンコードされた Markdown リンク先の解決（実装済み）
@@ -150,7 +151,7 @@ OpenCode / Claude Code など実クライアントでの確認は利用環境で
 人間がブラウザで AI と同じ知識を閲覧できるようにする。
 
 **ローカル版では編集機能を実装しない。**
-編集は vim などのエディタで行い、`index rescan` で反映する。
+編集は vim などのエディタで行い、デーモンの監視が反映する。
 Web UI での編集は提供しない。詳細は
 [DECISIONS.md](DECISIONS.md) の D-001 を参照。
 
@@ -186,6 +187,25 @@ GET /static/*
 マウント一覧、ページ本文、検索、参照・バックリンクを表示でき、
 Host / Origin 検証とループバック bind を備えています。
 
+## Phase 4.5: CLI HTTP API（実装済み）
+
+### 目的
+
+CLI が DB を直接開かず、デーモンが所有する状態だけを操作できるようにする。
+
+### タスク
+
+- `/api/admin/*`、`/api/search`、`/api/documents/*`、`/api/knowledge-links`（実装済み）
+- Bearer Token 認証（実装済み）
+- `reqwest` による CLI クライアント（実装済み）
+- デーモン停止時の明確なエラー（実装済み）
+- ファイル監視と API 書き込みの直列化（実装済み）
+
+### 完了条件
+
+デーモン停止中は CLI の通常操作が失敗し、起動中はすべて HTTP API 経由で動くこと。
+達成済み。
+
 ## Phase 5: Release
 
 ### タスク
@@ -214,8 +234,9 @@ Host / Origin 検証とループバック bind を備えています。
 
 ## 直近の優先順位
 
-1. OpenCode / Claude Code からの HTTP MCP 接続確認
-2. リリース整備（Phase 5）
+1. OS サービス管理（launchd / systemd）と XDG の data / state 分離
+2. OpenCode / Claude Code からの HTTP MCP 接続確認
+3. リリース整備（Phase 5）
 
 ## 未解決の設計課題
 

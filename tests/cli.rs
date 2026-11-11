@@ -1,8 +1,9 @@
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use mindmount::config::{Config, Credentials};
@@ -13,6 +14,7 @@ struct TestEnv {
     config_home: PathBuf,
     project: PathBuf,
     notes: PathBuf,
+    daemon: Cell<bool>,
 }
 
 impl TestEnv {
@@ -39,6 +41,7 @@ impl TestEnv {
             config_home,
             project,
             notes,
+            daemon: Cell::new(false),
         }
     }
 
@@ -50,10 +53,46 @@ impl TestEnv {
     }
 
     fn run(&self, args: &[&str]) -> Output {
+        if needs_daemon(args) {
+            self.ensure_daemon();
+        }
         self.command()
             .args(args)
             .output()
             .expect("failed to run mindmount")
+    }
+
+    fn run_native(&self, args: &[&str]) -> Output {
+        self.command()
+            .args(args)
+            .output()
+            .expect("failed to run mindmount")
+    }
+
+    fn ensure_daemon(&self) {
+        if self.daemon.get() {
+            return;
+        }
+        let output = self.run_native(&["daemon", "start", "--port", "0"]);
+        assert_success(&output);
+        self.daemon.set(true);
+    }
+
+    fn stop_daemon(&self) {
+        if self.daemon.replace(false) {
+            let _ = self.run_native(&["daemon", "stop"]);
+        }
+    }
+
+    fn endpoint(&self) -> String {
+        fs::read_to_string(self.config_home.join("mindmount/daemon.endpoint"))
+            .expect("daemon endpoint")
+            .trim()
+            .to_string()
+    }
+
+    fn port(&self) -> u16 {
+        self.endpoint().rsplit(':').next().unwrap().parse().unwrap()
     }
 
     fn config_path(&self) -> PathBuf {
@@ -80,6 +119,16 @@ impl TestEnv {
             name,
         ])
     }
+}
+
+impl Drop for TestEnv {
+    fn drop(&mut self) {
+        self.stop_daemon();
+    }
+}
+
+fn needs_daemon(args: &[&str]) -> bool {
+    !matches!(args.first(), None | Some(&"daemon") | Some(&"version"))
 }
 
 fn assert_success(output: &Output) {
@@ -125,15 +174,6 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     let mut files = BTreeMap::new();
     walk(root, root, &mut files);
     files
-}
-
-struct WatchProcess(Child);
-
-impl Drop for WatchProcess {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
 }
 
 fn wait_for_pages(env: &TestEnv, expected: &str) {
@@ -192,14 +232,6 @@ fn watch_eventually_reindexes_after_temporary_file_absence() {
     .unwrap();
     assert_success(&env.mount("Notes"));
     fs::write(env.notes.join("ready.md"), "# Watch ready\n").unwrap();
-    let child = env
-        .command()
-        .args(["index", "watch"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let _watch = WatchProcess(child);
     wait_for_pages(&env, "Watch ready");
     fs::rename(
         env.notes.join("index.md"),
@@ -239,14 +271,6 @@ fn watch_tracks_git_checkout() {
     git(&env.project, &["switch", "main"]);
     assert_success(&env.mount("Notes"));
     fs::write(env.notes.join("ready.md"), "# Watch ready\n").unwrap();
-    let child = env
-        .command()
-        .args(["index", "watch"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let _watch = WatchProcess(child);
     wait_for_pages(&env, "Watch ready");
     git(&env.project, &["switch", "second"]);
     wait_for_pages(&env, "Second branch");
@@ -259,14 +283,6 @@ fn watch_reindexes_at_start_and_after_atomic_save() {
     let env = TestEnv::new();
     assert_success(&env.mount("Notes"));
     fs::write(env.notes.join("index.md"), "# Startup change\n").unwrap();
-    let child = env
-        .command()
-        .args(["index", "watch"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let _watch = WatchProcess(child);
     wait_for_pages(&env, "Startup change");
 
     fs::write(env.notes.join(".new.md"), "# Atomic change\n").unwrap();
@@ -355,7 +371,7 @@ fn references_and_backlinks_follow_rescans() {
     assert!(stdout(&backlinks).contains("100\tsource.md"));
 
     fs::remove_file(env.notes.join("target.md")).unwrap();
-    assert_success(&env.run(&["index", "rescan"]));
+    assert_success(&env.run(&["mount", "sync", "--all"]));
     let links = stdout(&env.run(&["index", "references", "100"]));
     assert!(links.contains("-\t./target.md#heading"), "{links}");
     let backlinks = env.run(&["index", "backlinks", "200"]);
@@ -377,7 +393,7 @@ fn wiki_links_remain_unresolved_when_ambiguous_then_resolve() {
     assert_success(&env.mount("Notes"));
     assert!(stdout(&env.run(&["index", "references", "100"])).contains("-\tShared\twiki"));
     fs::remove_file(env.notes.join("b.md")).unwrap();
-    assert_success(&env.run(&["index", "rescan"]));
+    assert_success(&env.run(&["mount", "sync", "--all"]));
     assert!(stdout(&env.run(&["index", "references", "100"])).contains("201\tShared\twiki"));
 }
 
@@ -398,11 +414,11 @@ fn searches_japanese_and_tracks_index_changes() {
     }
     assert!(stdout(&env.run(&["index", "search", "存在しない"])).contains("No matching pages"));
     fs::write(env.notes.join("japanese.md"), "# 新しい内容\n").unwrap();
-    assert_success(&env.run(&["index", "rescan"]));
+    assert_success(&env.run(&["mount", "sync", "--all"]));
     assert!(stdout(&env.run(&["index", "search", "日本語"])).contains("No matching pages"));
     assert!(stdout(&env.run(&["index", "search", "新しい"])).contains("japanese.md"));
     fs::remove_file(env.notes.join("japanese.md")).unwrap();
-    assert_success(&env.run(&["index", "rescan"]));
+    assert_success(&env.run(&["mount", "sync", "--all"]));
     assert!(stdout(&env.run(&["index", "search", "新しい"])).contains("No matching pages"));
     let mount_id = env.load_config().mounts[0].id.to_string();
     assert_success(&env.run(&["mount", "remove", &mount_id]));
@@ -450,6 +466,7 @@ fn restricts_existing_data_directory_and_database_permissions() {
     fs::set_permissions(&db_dir, fs::Permissions::from_mode(0o755)).unwrap();
     assert_success(&env.mount("Notes"));
     fs::set_permissions(env.database_path(), fs::Permissions::from_mode(0o644)).unwrap();
+    env.stop_daemon();
     assert_success(&env.run(&["mount", "list"]));
     for path in [&data, &db_dir, &env.database_path()] {
         assert_eq!(
@@ -612,6 +629,7 @@ fn rejects_missing_directories() {
 fn reindex_rebuilds_a_deleted_database() {
     let env = TestEnv::new();
     assert_success(&env.mount("Notes"));
+    env.stop_daemon();
 
     for suffix in ["", "-wal", "-shm"] {
         let path = PathBuf::from(format!("{}{suffix}", env.database_path().display()));
@@ -621,7 +639,7 @@ fn reindex_rebuilds_a_deleted_database() {
     }
     assert!(!env.database_path().exists());
 
-    let output = env.run(&["index", "rescan"]);
+    let output = env.run(&["mount", "sync", "--all"]);
     assert_success(&output);
     assert!(stdout(&output).contains("3 files"));
     assert!(env.database_path().is_file());
@@ -663,19 +681,21 @@ fn without_arguments_prints_help() {
 fn refuses_concurrent_operations_without_modifying_configuration() {
     let env = TestEnv::new();
     assert_success(&env.mount("Notes"));
-    let before = fs::read(env.config_path()).unwrap();
-    let lock = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(env.config_home.join("mindmount/mindmount.lock"))
-        .unwrap();
-    lock.try_lock().unwrap();
-    let output = env.run(&["mount", "list"]);
+    let output = env.run(&["daemon", "start", "--port", "0"]);
     assert_failure(&output);
-    assert!(stderr(&output).contains("another Mindmount process may be running"));
-    assert_eq!(fs::read(env.config_path()).unwrap(), before);
-    drop(lock);
-    assert_success(&env.run(&["mount", "list"]));
+    assert!(stderr(&output).contains("already running"));
+}
+
+#[test]
+fn cli_fails_cleanly_when_the_daemon_is_stopped() {
+    let env = TestEnv::new();
+    let output = env.run_native(&["mount", "list"]);
+    assert_failure(&output);
+    assert!(
+        stderr(&output).contains("Mindmount daemon is not running"),
+        "{}",
+        stderr(&output)
+    );
 }
 
 #[test]
@@ -691,6 +711,7 @@ fn daemon_start_rejects_non_loopback_hosts() {
 fn daemon_run_serves_mounts() {
     let env = TestEnv::new();
     assert_success(&env.mount("Notes"));
+    env.stop_daemon();
 
     let port = std::net::TcpListener::bind(("127.0.0.1", 0))
         .unwrap()
@@ -758,15 +779,7 @@ fn get_until_ready(port: u16, path: &str, expected: &str) {
 fn daemon_serves_web_and_mcp() {
     let env = TestEnv::new();
     assert_success(&env.mount("Notes"));
-    let port = std::net::TcpListener::bind(("127.0.0.1", 0))
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-
-    let start = env.run(&["daemon", "start", "--port", &port.to_string()]);
-    assert_success(&start);
-    assert!(stdout(&start).contains("Started"), "{}", stdout(&start));
+    let port = env.port();
 
     get_until_ready(port, "/mounts", "Notes");
     let status = env.run(&["daemon", "status"]);
@@ -781,8 +794,22 @@ fn daemon_serves_web_and_mcp() {
     let unauthorized = http_request(port, &request);
     assert!(unauthorized.starts_with("HTTP/1.1 401"), "{unauthorized}");
 
+    let api_request = format!(
+        "GET /api/admin/status HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    );
+    let unauthorized = http_request(port, &api_request);
+    assert!(unauthorized.starts_with("HTTP/1.1 401"), "{unauthorized}");
+
     let credentials =
         Credentials::load(&env.config_home.join("mindmount/credentials.toml")).unwrap();
+    let authorized = format!(
+        "GET /api/admin/status HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",
+        credentials.mcp_token
+    );
+    let response = http_request(port, &authorized);
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(response.contains("\"status\":\"ok\""), "{response}");
+
     let request = format!(
         "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         credentials.mcp_token,

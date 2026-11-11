@@ -65,11 +65,6 @@ impl AppPaths {
         self.config_dir.join("id-state")
     }
 
-    /// Holds an advisory lock for the duration of a CLI operation.
-    pub fn lock(&self) -> Result<fs::File> {
-        acquire_lock(&self.config_dir.join("mindmount.lock"))
-    }
-
     /// Prevents two daemons from running at the same time.
     pub fn daemon_lock(&self) -> Result<fs::File> {
         acquire_lock(&self.config_dir.join("mindmount.daemon.lock"))
@@ -77,6 +72,12 @@ impl AppPaths {
 
     pub fn daemon_pid_file(&self) -> PathBuf {
         self.config_dir.join("daemon.pid")
+    }
+
+    /// The URL the running daemon bound to. CLI clients read this file so a
+    /// non-default port does not need to be repeated on every command.
+    pub fn daemon_endpoint_file(&self) -> PathBuf {
+        self.config_dir.join("daemon.endpoint")
     }
 
     pub fn daemon_log_file(&self) -> PathBuf {

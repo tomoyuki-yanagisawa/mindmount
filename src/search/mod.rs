@@ -8,6 +8,7 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use ignore::WalkBuilder;
 use regex::{Regex, RegexBuilder};
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::config::Config;
@@ -20,7 +21,7 @@ pub struct SearchOptions<'a> {
     pub limit: usize,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SearchHit {
     pub document_id: Option<i64>,
     pub mount_id: i64,

@@ -3,13 +3,14 @@
 use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use sqlx::Row;
 
 use crate::core::document::Document;
 
 use super::{Database, DbError, Result};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LinkRow {
     pub source_id: i64,
     pub source_path: String,
@@ -20,7 +21,7 @@ pub struct LinkRow {
     pub origin: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct MetadataEntry {
     pub key: String,
     pub value_json: String,
@@ -232,6 +233,15 @@ impl Database {
         .execute(&self.pool)
         .await?;
         Ok(())
+    }
+
+    pub async fn delete_metadata(&self, document_id: i64, key: &str) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM document_metadata WHERE document_id = ? AND key = ?")
+            .bind(document_id)
+            .bind(key)
+            .execute(&self.pool)
+            .await?;
+        Ok(result.rows_affected() > 0)
     }
 
     #[allow(clippy::too_many_arguments)]

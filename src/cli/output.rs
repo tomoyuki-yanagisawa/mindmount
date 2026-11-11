@@ -2,7 +2,7 @@
 
 use anyhow::{bail, Result};
 
-use crate::config::{Config, Mount};
+use crate::config::Mount;
 use crate::core::document::Document;
 use crate::db::queries::{LinkRow, MetadataEntry};
 use crate::index::indexer::SyncOutcome;
@@ -48,7 +48,7 @@ pub fn unmounted(mount: &Mount) {
     println!("Index metadata and knowledge links were kept inactive.");
 }
 
-pub fn page_list(config: &Config, documents: &[Document], empty: &str) {
+pub fn page_list(documents: &[Document], empty: &str) {
     if documents.is_empty() {
         println!("{empty}");
         return;
@@ -56,13 +56,9 @@ pub fn page_list(config: &Config, documents: &[Document], empty: &str) {
 
     println!("ID\tMOUNT\tPATH\tTITLE");
     for document in documents {
-        let name = config
-            .find_by_id(document.mount_id)
-            .map(|mount| mount.name.as_str())
-            .unwrap_or("(unknown)");
         println!(
             "{}\t{}\t{}\t{}",
-            document.id, name, document.relative_path, document.title
+            document.id, document.mount_id, document.relative_path, document.title
         );
     }
 }

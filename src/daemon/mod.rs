@@ -11,7 +11,9 @@ use axum::http::{header, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
+use tokio::sync::Mutex;
 
+use crate::api;
 use crate::config::{AppPaths, Credentials};
 use crate::db::Database;
 use crate::index;
@@ -33,36 +35,49 @@ pub async fn run(paths: &AppPaths, host: &str, port: u16) -> Result<()> {
 
     let credentials = Credentials::load_or_create(&paths.credentials_file())?;
     let state = web::AppState::new(paths.clone(), database.clone(), port);
+    let write_lock = Arc::new(Mutex::new(()));
+    let api_state = api::new(paths, database.clone(), port, write_lock.clone());
     let mcp_app = Router::new()
         .nest_service("/mcp", mcp::http_service(paths.clone(), database))
         .layer(middleware::from_fn_with_state(
-            credentials.mcp_token,
+            credentials.mcp_token.clone(),
             require_bearer,
         ));
+    let api_app = api::router(api_state).layer(middleware::from_fn_with_state(
+        credentials.mcp_token.clone(),
+        require_bearer,
+    ));
     let app = web::router(state.clone())
         .merge(mcp_app)
+        .merge(api_app)
         .layer(middleware::from_fn_with_state(state, web::guard));
 
     let watcher_paths = paths.clone();
     tokio::spawn(async move {
-        if let Err(error) = index::watch::run(&watcher_paths).await {
+        if let Err(error) = index::watch::run(&watcher_paths, write_lock).await {
             tracing::error!("watcher stopped: {error:#}");
         }
     });
 
-    fs::write(paths.daemon_pid_file(), std::process::id().to_string())
-        .context("cannot write the daemon pid file")?;
     let display_host = if host.contains(':') {
         format!("[{host}]")
     } else {
         host.to_string()
     };
+    fs::write(
+        paths.daemon_endpoint_file(),
+        format!("http://{display_host}:{port}"),
+    )
+    .context("cannot write the daemon endpoint file")?;
+    fs::write(paths.daemon_pid_file(), std::process::id().to_string())
+        .context("cannot write the daemon pid file")?;
     eprintln!("Mindmount daemon listening on http://{display_host}:{port} (web and /mcp)");
 
     let result = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await;
     let _ = fs::remove_file(paths.daemon_pid_file());
+    let _ = fs::remove_file(paths.daemon_endpoint_file());
     result.context("the daemon stopped unexpectedly")
 }
 
@@ -89,7 +104,7 @@ pub async fn start(paths: &AppPaths, host: &str, port: u16) -> Result<()> {
         .context("cannot start the daemon")?;
 
     for _ in 0..30 {
-        if let Some(pid) = running_pid(paths) {
+        if let (Some(pid), true) = (running_pid(paths), paths.daemon_endpoint_file().is_file()) {
             println!("Started the Mindmount daemon (pid {pid})");
             return Ok(());
         }
@@ -104,6 +119,7 @@ pub async fn start(paths: &AppPaths, host: &str, port: u16) -> Result<()> {
 pub async fn stop(paths: &AppPaths) -> Result<()> {
     let Some(pid) = running_pid(paths) else {
         let _ = fs::remove_file(paths.daemon_pid_file());
+        let _ = fs::remove_file(paths.daemon_endpoint_file());
         println!("The Mindmount daemon is not running.");
         return Ok(());
     };
@@ -114,6 +130,7 @@ pub async fn stop(paths: &AppPaths) -> Result<()> {
     for _ in 0..50 {
         if !is_running(pid) {
             let _ = fs::remove_file(paths.daemon_pid_file());
+            let _ = fs::remove_file(paths.daemon_endpoint_file());
             println!("Stopped the Mindmount daemon.");
             return Ok(());
         }
@@ -124,13 +141,38 @@ pub async fn stop(paths: &AppPaths) -> Result<()> {
 
 pub async fn status(paths: &AppPaths) -> Result<()> {
     match running_pid(paths) {
-        Some(pid) => println!("The Mindmount daemon is running (pid {pid})."),
+        Some(pid) => {
+            println!("The Mindmount daemon is running (pid {pid}).");
+            match health(paths).await {
+                Ok(endpoint) => println!("API is responding at {endpoint}"),
+                Err(error) => println!("API is not responding: {error}"),
+            }
+        }
         None => {
             let _ = fs::remove_file(paths.daemon_pid_file());
+            let _ = fs::remove_file(paths.daemon_endpoint_file());
             println!("The Mindmount daemon is not running.");
         }
     }
     Ok(())
+}
+
+async fn health(paths: &AppPaths) -> Result<String> {
+    let endpoint = fs::read_to_string(paths.daemon_endpoint_file())
+        .context("the daemon endpoint file is missing")?
+        .trim()
+        .to_string();
+    let token = Credentials::load(&paths.credentials_file())?.mcp_token;
+    reqwest::Client::new()
+        .get(format!("{endpoint}/api/admin/status"))
+        .bearer_auth(token)
+        .timeout(Duration::from_secs(2))
+        .send()
+        .await
+        .context("cannot reach the daemon API")?
+        .error_for_status()
+        .context("the daemon API returned an error")?;
+    Ok(endpoint)
 }
 
 pub async fn restart(paths: &AppPaths, host: &str, port: u16) -> Result<()> {

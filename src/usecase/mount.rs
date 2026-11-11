@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 
 use crate::config::{AppPaths, Config, Mount};
 use crate::core::id::Snowflake;
@@ -11,12 +12,14 @@ use crate::db::Database;
 use crate::index::indexer::{self, SyncReport};
 use crate::storage::filesystem::MountRoot;
 
+#[derive(Debug, Serialize, Deserialize)]
 pub struct MountResult {
     pub mount: Mount,
     pub report: SyncReport,
     pub already_registered: bool,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
 pub struct MountRow {
     pub mount: Mount,
     pub documents: i64,

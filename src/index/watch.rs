@@ -2,11 +2,12 @@
 
 use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use notify::{EventKind, RecursiveMode, Watcher};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
 
 use crate::config::{AppPaths, Config};
 use crate::core::id::Snowflake;
@@ -16,7 +17,7 @@ use crate::index::indexer;
 const DEBOUNCE: Duration = Duration::from_millis(500);
 const RECONCILE: Duration = Duration::from_secs(30);
 
-pub async fn run(paths: &AppPaths) -> Result<()> {
+pub async fn run(paths: &AppPaths, write_lock: Arc<Mutex<()>>) -> Result<()> {
     let (sender, mut receiver) = mpsc::unbounded_channel();
     let mut watcher = notify::recommended_watcher(move |event| {
         let _ = sender.send(event);
@@ -55,7 +56,7 @@ pub async fn run(paths: &AppPaths) -> Result<()> {
                     },
                 }
             }
-            match reconcile(paths, &mut watcher, &mut watched).await {
+            match reconcile(paths, &mut watcher, &mut watched, &write_lock).await {
                 Ok(snapshot) => {
                     config_snapshot = Some(snapshot);
                     dirty = false;
@@ -105,7 +106,6 @@ fn relevant(event: &notify::Event, paths: &AppPaths, watched: &HashSet<PathBuf>)
             let internal = path == paths.config_dir()
                 || path.starts_with(paths.config_dir().join("db"))
                 || path == &paths.id_state_file()
-                || path == &paths.config_dir().join("mindmount.lock")
                 || (path.parent() == Some(paths.config_dir())
                     && path
                         .file_name()
@@ -118,10 +118,10 @@ async fn reconcile(
     paths: &AppPaths,
     watcher: &mut impl Watcher,
     watched: &mut HashSet<PathBuf>,
+    write_lock: &Mutex<()>,
 ) -> Result<Vec<u8>> {
-    // Lock only while reading config and updating the index. IDs must be
-    // reloaded under this lock because other CLI processes may issue IDs.
-    let _lock = paths.lock()?;
+    // Serialize with API writes so config and index updates cannot interleave.
+    let _guard = write_lock.lock().await;
     let config = Config::load_or_create(&paths.config_file())?;
     let snapshot = std::fs::read(paths.config_file())?;
     let desired: HashSet<PathBuf> = config
@@ -177,11 +177,11 @@ mod tests {
         let watched = HashSet::from([PathBuf::from("/notes")]);
         let access = notify::Event::new(EventKind::Access(notify::event::AccessKind::Any))
             .add_path(PathBuf::from("/notes/page.md"));
-        let lock =
-            notify::Event::new(EventKind::Any).add_path(paths.config_dir().join("mindmount.lock"));
+        let state =
+            notify::Event::new(EventKind::Any).add_path(paths.config_dir().join("daemon.pid"));
         let changed = notify::Event::new(EventKind::Any).add_path(PathBuf::from("/notes/page.md"));
         assert!(!relevant(&access, &paths, &watched));
-        assert!(!relevant(&lock, &paths, &watched));
+        assert!(!relevant(&state, &paths, &watched));
         assert!(relevant(&changed, &paths, &watched));
     }
 }

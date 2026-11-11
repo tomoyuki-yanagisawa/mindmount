@@ -8,10 +8,11 @@ use std::fmt::Write as _;
 
 use chrono::{DateTime, Utc};
 use pulldown_cmark::{Event, HeadingLevel, Parser, Tag, TagEnd};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// A document row as stored in the derived index.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Document {
     pub id: i64,
     pub mount_id: i64,

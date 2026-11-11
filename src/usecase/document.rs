@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
 
 use crate::config::{Config, Mount};
 use crate::core::document::{content_hash, Document};
@@ -15,7 +16,7 @@ pub enum DocumentTarget {
     Path { mount_id: i64, path: String },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ReadResult {
     pub mount: Mount,
     pub document: Option<Document>,

@@ -1,7 +1,8 @@
 //! Long-running daemon for the viewer, MCP HTTP, and file watching.
 
-use std::fs::{self, OpenOptions};
-use std::process::{Command, Stdio};
+use std::env;
+use std::fs;
+use std::process::Command;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -11,6 +12,10 @@ use axum::http::{header, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::Router;
+use service_manager::{
+    RestartPolicy, ServiceInstallCtx, ServiceLabel, ServiceLevel, ServiceManager, ServiceStartCtx,
+    ServiceStatus, ServiceStatusCtx, ServiceUninstallCtx,
+};
 use tokio::sync::Mutex;
 
 use crate::api;
@@ -89,21 +94,42 @@ pub async fn start(paths: &AppPaths, host: &str, port: u16) -> Result<()> {
         bail!("daemon is already running (pid {pid})");
     }
     paths.ensure_dirs()?;
-    let log = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(paths.daemon_log_file())
-        .context("cannot open the daemon log")?;
-    let executable = std::env::current_exe().context("cannot locate the mindmount executable")?;
-    Command::new(executable)
-        .args(["daemon", "run", "--host", host, "--port", &port.to_string()])
-        .stdin(Stdio::null())
-        .stdout(log.try_clone()?)
-        .stderr(log)
-        .spawn()
-        .context("cannot start the daemon")?;
+    let executable = env::current_exe().context("cannot locate the mindmount executable")?;
+    let mut manager = service_manager()?;
+    manager
+        .set_level(ServiceLevel::User)
+        .context("cannot select a user service")?;
+    manager
+        .install(ServiceInstallCtx {
+            label: service_label(),
+            program: executable,
+            args: vec![
+                "daemon".into(),
+                "run".into(),
+                "--host".into(),
+                host.into(),
+                "--port".into(),
+                port.to_string().into(),
+            ],
+            contents: None,
+            username: None,
+            working_directory: None,
+            environment: service_environment(),
+            autostart: true,
+            restart_policy: RestartPolicy::OnFailure {
+                delay_secs: None,
+                max_retries: None,
+                reset_after_secs: None,
+            },
+        })
+        .context("cannot install the daemon service")?;
+    manager
+        .start(ServiceStartCtx {
+            label: service_label(),
+        })
+        .context("cannot start the daemon service")?;
 
-    for _ in 0..30 {
+    for _ in 0..50 {
         if let (Some(pid), true) = (running_pid(paths), paths.daemon_endpoint_file().is_file()) {
             println!("Started the Mindmount daemon (pid {pid})");
             return Ok(());
@@ -117,29 +143,62 @@ pub async fn start(paths: &AppPaths, host: &str, port: u16) -> Result<()> {
 }
 
 pub async fn stop(paths: &AppPaths) -> Result<()> {
-    let Some(pid) = running_pid(paths) else {
-        let _ = fs::remove_file(paths.daemon_pid_file());
-        let _ = fs::remove_file(paths.daemon_endpoint_file());
-        println!("The Mindmount daemon is not running.");
-        return Ok(());
-    };
-    Command::new("kill")
-        .args(["-TERM", &pid.to_string()])
-        .status()
-        .context("cannot signal the daemon")?;
-    for _ in 0..50 {
-        if !is_running(pid) {
-            let _ = fs::remove_file(paths.daemon_pid_file());
-            let _ = fs::remove_file(paths.daemon_endpoint_file());
-            println!("Stopped the Mindmount daemon.");
-            return Ok(());
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
+    let pid = running_pid(paths);
+    let mut managed = false;
+    if let Ok(mut manager) = service_manager() {
+        let _ = manager.set_level(ServiceLevel::User);
+        managed = matches!(
+            manager.status(ServiceStatusCtx {
+                label: service_label(),
+            }),
+            Ok(ServiceStatus::Running | ServiceStatus::Stopped(_))
+        );
+        let _ = manager.uninstall(ServiceUninstallCtx {
+            label: service_label(),
+        });
     }
-    bail!("the daemon did not stop")
+
+    if let Some(pid) = pid {
+        // Let the service manager stop the process before signaling it directly.
+        if managed {
+            for _ in 0..20 {
+                if !is_running(pid) {
+                    cleanup_daemon_files(paths);
+                    println!("Stopped the Mindmount daemon.");
+                    return Ok(());
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+        let _ = Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .output();
+        for _ in 0..50 {
+            if !is_running(pid) {
+                cleanup_daemon_files(paths);
+                println!("Stopped the Mindmount daemon.");
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        bail!("the daemon did not stop");
+    }
+
+    cleanup_daemon_files(paths);
+    println!("The Mindmount daemon is not running.");
+    Ok(())
+}
+
+fn cleanup_daemon_files(paths: &AppPaths) {
+    let _ = fs::remove_file(paths.daemon_pid_file());
+    let _ = fs::remove_file(paths.daemon_endpoint_file());
 }
 
 pub async fn status(paths: &AppPaths) -> Result<()> {
+    match service_status() {
+        Some(status) => println!("Service: {status}"),
+        None => println!("Service: unavailable"),
+    }
     match running_pid(paths) {
         Some(pid) => {
             println!("The Mindmount daemon is running (pid {pid}).");
@@ -155,6 +214,55 @@ pub async fn status(paths: &AppPaths) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn service_manager() -> Result<Box<dyn ServiceManager>> {
+    if env::var_os("MINDMOUNT_DISABLE_SERVICE").is_some() {
+        bail!("service management is disabled by MINDMOUNT_DISABLE_SERVICE");
+    }
+    <dyn ServiceManager>::native().context("no supported service manager is available")
+}
+
+fn service_label() -> ServiceLabel {
+    ServiceLabel {
+        qualifier: Some("dev".into()),
+        organization: Some("mindmount".into()),
+        application: "daemon".into(),
+    }
+}
+
+fn service_environment() -> Option<Vec<(String, String)>> {
+    const KEYS: [&str; 6] = [
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+        "XDG_STATE_HOME",
+        "XDG_CACHE_HOME",
+        "HOME",
+        "RUST_LOG",
+    ];
+    let values: Vec<(String, String)> = KEYS
+        .iter()
+        .filter_map(|key| env::var(key).ok().map(|value| (key.to_string(), value)))
+        .collect();
+    (!values.is_empty()).then_some(values)
+}
+
+fn service_status() -> Option<String> {
+    let mut manager = service_manager().ok()?;
+    manager.set_level(ServiceLevel::User).ok()?;
+    let status = manager
+        .status(ServiceStatusCtx {
+            label: service_label(),
+        })
+        .ok()?;
+    Some(match status {
+        ServiceStatus::NotInstalled => "not installed".into(),
+        ServiceStatus::Running => "running".into(),
+        ServiceStatus::Stopped(reason) => match reason {
+            Some(reason) => format!("stopped ({reason})"),
+            None => "stopped".into(),
+        },
+    })
 }
 
 async fn health(paths: &AppPaths) -> Result<String> {
@@ -192,8 +300,8 @@ fn running_pid(paths: &AppPaths) -> Option<u32> {
 fn is_running(pid: u32) -> bool {
     Command::new("kill")
         .args(["-0", &pid.to_string()])
-        .status()
-        .map(|status| status.success())
+        .output()
+        .map(|output| output.status.success())
         .unwrap_or(false)
 }
 

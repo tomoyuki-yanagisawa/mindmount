@@ -62,7 +62,7 @@ mindmount -p <PATH> -d <PATH> [-n <NAME>] [--host <HOST>] [--port <PORT>]
 
 | コマンド | 目的 |
 |---|---|
-| `daemon start` | Web・MCP HTTP・監視をバックグラウンドで起動する |
+| `daemon start` | Web・MCP HTTP・監視を OS サービスとして起動する |
 | `daemon stop` | デーモンを停止する |
 | `daemon restart` | デーモンを再起動する |
 | `daemon status` | デーモンの稼働状態を表示する |
@@ -317,17 +317,20 @@ mindmount daemon run
 ```
 
 デーモンは Web ビューア、MCP Streamable HTTP、CLI HTTP API、ファイル監視を1プロセスで
-提供します。`daemon start` はバックグラウンド、`daemon run` はフォアグラウンドで起動します。
+提供します。`daemon start` は OS のサービス管理機構に登録して起動し、`daemon run` は
+フォアグラウンドで起動します。
 
 - Web: `http://127.0.0.1:3000/`
 - MCP: `http://127.0.0.1:3000/mcp`
 - API: `http://127.0.0.1:3000/api/*`
 - bind は `127.0.0.1` / `::1` のループバックのみ
+- macOS: launchd user agent、Linux: systemd user service
 - MCP HTTP と CLI API は `credentials.toml` の `mcp_token` を
   `Authorization: Bearer <token>` で要求
 - 二重起動はロックで拒否
-- バックグラウンド起動時のログ: `~/.config/mindmount/daemon.log`
-- `daemon status` はプロセスと API の応答を確認する
+- ログ: `$XDG_STATE_HOME/mindmount/mindmount.log`（未設定時 `~/.local/state/mindmount/`）
+- `daemon status` はサービス状態、プロセス、API の応答を確認する
+- サービス管理を使えない環境では `daemon run` を使う
 
 ### Web ビューア
 
@@ -476,17 +479,24 @@ mtime は保存しますが、変更判定には使いません。
 
 ## ローカルデータ
 
+XDG 方式で config / data / state / cache を分離します。
+
 ```text
 $XDG_CONFIG_HOME/mindmount/   # 未設定時: ~/.config/mindmount/
 ├── config.toml               # マウント設定の正本
-├── id-state                  # Snowflake ID の発行状態
+└── credentials.toml          # CLI / MCP HTTP の Bearer Token
+
+$XDG_DATA_HOME/mindmount/     # 未設定時: ~/.local/share/mindmount/
+├── mindmount.sqlite          # 派生 index と DB 独自データ
+└── id-state                  # Snowflake ID の発行状態
+
+$XDG_STATE_HOME/mindmount/    # 未設定時: ~/.local/state/mindmount/
 ├── mindmount.daemon.lock     # デーモンの二重起動防止
 ├── daemon.pid                # デーモンの PID
 ├── daemon.endpoint           # CLI が接続する URL
-├── daemon.log                # バックグラウンド起動時のログ
-├── credentials.toml          # CLI / MCP HTTP の Bearer Token
-└── db/
-    └── mindmount.sqlite      # 派生 index と DB 独自データ
+└── mindmount.log             # サービス起動時のログ
+
+$XDG_CACHE_HOME/mindmount/    # 未設定時: ~/.cache/mindmount/
 ```
 
 `config.toml` の例:
@@ -505,7 +515,8 @@ created_at = "2026-11-09T11:20:04.405660Z"
 - `config.toml` がマウント設定の正本
 - SQLite は派生 index と、メタデータ・Knowledge Links などの永続データを含む。DB を削除すると後者は失われる
 - 検索は実ファイルを直接読むため、SQLite に Markdown の本文は保存されない
-- macOS / Linux では、起動時に Mindmount のデータディレクトリと DB ファイルからグループ・その他ユーザーのアクセス権を取り除く
+- macOS / Linux では、起動時に各ディレクトリと DB ファイルからグループ・その他ユーザーのアクセス権を取り除く
+- 旧レイアウトの `config/db/mindmount.sqlite` と `config/id-state` は初回起動時に data へ移動する
 - `node_id` は 0〜1023。通常は変更しない
 - `id-state` は ID の重複を防ぐため保持する。ID の範囲を先に予約するため、再起動後の ID の時刻部分が実時刻より進む場合がある
 - デーモンが起動中は `config.toml` のマウント一覧が SQLite に同期される
@@ -513,9 +524,9 @@ created_at = "2026-11-09T11:20:04.405660Z"
 ### DB をリセットする
 
 ```bash
-rm -f ~/.config/mindmount/db/mindmount.sqlite \
-      ~/.config/mindmount/db/mindmount.sqlite-wal \
-      ~/.config/mindmount/db/mindmount.sqlite-shm
+rm -f ~/.local/share/mindmount/mindmount.sqlite \
+      ~/.local/share/mindmount/mindmount.sqlite-wal \
+      ~/.local/share/mindmount/mindmount.sqlite-shm
 mindmount daemon restart
 mindmount mount sync --all
 ```
@@ -528,10 +539,15 @@ mindmount mount sync --all
 | 変数 | 説明 |
 |---|---|
 | `XDG_CONFIG_HOME` | 設定ディレクトリの基準。絶対パスであること |
-| `HOME` | `XDG_CONFIG_HOME` 未設定時の `~/.config` 解決に使う |
+| `XDG_DATA_HOME` | DB と ID 状態の基準。未設定時は `~/.local/share` |
+| `XDG_STATE_HOME` | PID・endpoint・ログの基準。未設定時は `~/.local/state` |
+| `XDG_CACHE_HOME` | キャッシュの基準。未設定時は `~/.cache` |
+| `HOME` | XDG 変数が未設定のときの基準 |
 | `RUST_LOG` | ログフィルタ。既定は `mindmount=warn,warn` |
+| `MINDMOUNT_DISABLE_SERVICE` | 設定すると `daemon start/stop` のサービス管理を無効化する（テスト用） |
 
-ログは stderr に出力します。
+ログは stderr に出力します。`daemon start` ではサービス管理機構がログを
+`$XDG_STATE_HOME/mindmount/mindmount.log` に記録します。
 
 `XDG_CONFIG_HOME` が相対パスの場合はエラーになります。
 

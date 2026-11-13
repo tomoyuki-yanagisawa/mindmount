@@ -102,17 +102,31 @@ bind は `127.0.0.1` / `::1` のループバックに限定されます。
 
 ## ローカルデータ
 
+XDG 方式で config / data / state / cache を分離します。
+
 ```text
 $XDG_CONFIG_HOME/mindmount/   # 未設定時: ~/.config/mindmount/
 ├── config.toml               # マウント設定の正本
-├── id-state                  # ID 発行の予約状態
+└── credentials.toml          # CLI / MCP HTTP の Bearer Token
+
+$XDG_DATA_HOME/mindmount/     # 未設定時: ~/.local/share/mindmount/
+├── mindmount.sqlite          # 派生 index と DB 独自データ
+└── id-state                  # ID 発行の予約状態
+
+$XDG_STATE_HOME/mindmount/    # 未設定時: ~/.local/state/mindmount/
 ├── mindmount.daemon.lock     # デーモンの二重起動防止
 ├── daemon.pid                # デーモンの PID
 ├── daemon.endpoint           # CLI が接続する URL
-├── daemon.log                # バックグラウンド起動時のログ
-├── credentials.toml          # CLI / MCP HTTP の Bearer Token
-└── db/mindmount.sqlite       # 派生 index と DB 独自データ
+└── mindmount.log             # サービス起動時のログ
+
+$XDG_CACHE_HOME/mindmount/    # 未設定時: ~/.cache/mindmount/
 ```
+
+旧レイアウトの `config/db/mindmount.sqlite` と `config/id-state` は、初回起動時に
+data ディレクトリへ移動されます。
+
+`daemon start` は macOS の launchd、Linux の systemd user service に登録します。
+`daemon run` はサービス管理を使わずフォアグラウンドで起動します。
 
 Markdown ファイルはマウント先にそのまま残ります。マウントや index 構築で
 既存ファイルを書き換えることはありません。`mount remove` も Markdown を

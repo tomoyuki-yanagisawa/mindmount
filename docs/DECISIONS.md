@@ -102,3 +102,28 @@ mindmount version
 - CLI の通常操作には `mindmount daemon start` が必要になる。
 - `index watch` は廃止し、監視はデーモンに一本化する。`index rescan` は `mount sync --all` に統合する。
 - 統合テストは各テスト用のデーモンを起動し、HTTP API 経由で CLI を検証する。
+
+## D-005: XDG 分離と OS サービス管理を採用する
+
+- 日付: 2026-11-13
+- 状態: Accepted
+
+### 背景
+
+- 設定・永続データ・実行時状態・ログを同じディレクトリに置くと、バックアップや権限管理が曖昧になる。
+- デーモンを CLI の子プロセスとして起動すると、ログイン時の自動起動や異常終了時の再起動を OS に任せられない。
+
+### 決定
+
+- `etcetera` の XDG 戦略を使い、config / data / state / cache を分離する。
+- DB と `id-state` は data、pid / endpoint / lock / ログは state に置く。
+- 旧レイアウトの DB と ID 状態は初回起動時に data へ移動する。
+- `daemon start|stop|restart` は `service-manager` で launchd / systemd user service を操作する。
+- `daemon run` はサービス管理を使わないフォアグラウンド実行として残す。
+- `daemon status` はサービス状態、プロセス、HTTP ヘルスチェックを区別して表示する。
+
+### 影響
+
+- ログと実行時ファイルの場所が `~/.local/state/mindmount/` に変わる。
+- サービス管理を使えない環境やテストでは `MINDMOUNT_DISABLE_SERVICE` を設定する。
+- `daemon stop` はサービスを uninstall してから、pid による停止にフォールバックする。

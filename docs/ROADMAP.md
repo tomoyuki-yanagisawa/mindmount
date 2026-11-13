@@ -14,6 +14,7 @@ Web UI での編集は提供しません。
 | 3 | MCP サーバー | 実装済み |
 | 4 | Web ビューア（閲覧専用） | 実装済み |
 | 4.5 | CLI HTTP API | 実装済み |
+| 4.6 | XDG / OS サービス | 実装済み |
 | 5 | リリース | 未着手 |
 
 ローカル版は、MCP 連携と人間用の読み取り専用ビューアを中心に据えます。
@@ -206,6 +207,25 @@ CLI が DB を直接開かず、デーモンが所有する状態だけを操作
 デーモン停止中は CLI の通常操作が失敗し、起動中はすべて HTTP API 経由で動くこと。
 達成済み。
 
+## Phase 4.6: XDG / OS サービス（実装済み）
+
+### 目的
+
+設定・永続データ・実行時状態を分離し、デーモンの起動と再起動を OS に任せる。
+
+### タスク
+
+- `etcetera` による config / data / state / cache 分離（実装済み）
+- 旧レイアウトの DB と ID 状態の移行（実装済み）
+- `service-manager` による launchd / systemd user service（実装済み）
+- `daemon status` のサービス状態 + HTTP ヘルスチェック（実装済み）
+- `daemon run` のフォアグラウンド実行（実装済み）
+
+### 完了条件
+
+`daemon start` で OS サービスとして起動し、`daemon run` なしで CLI が使えること。
+サービス管理を使えない環境では `daemon run` にフォールバックできること。
+
 ## Phase 5: Release
 
 ### タスク
@@ -234,9 +254,8 @@ CLI が DB を直接開かず、デーモンが所有する状態だけを操作
 
 ## 直近の優先順位
 
-1. OS サービス管理（launchd / systemd）と XDG の data / state 分離
-2. OpenCode / Claude Code からの HTTP MCP 接続確認
-3. リリース整備（Phase 5）
+1. OpenCode / Claude Code からの HTTP MCP 接続確認
+2. リリース整備（Phase 5）
 
 ## 未解決の設計課題
 

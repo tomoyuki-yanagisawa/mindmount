@@ -33,6 +33,8 @@ Mindmount はローカルファーストの OSS プロジェクトです。自�
 - デーモンによるファイル監視と自動再走査
 - デーモン（Web ビューア、MCP Streamable HTTP、CLI HTTP API、ファイル監視）
 - CLI HTTP API（`/api/*`、Bearer 認証、`reqwest` クライアント）
+- launchd / systemd user service によるデーモン管理
+- XDG config / data / state / cache 分離
 - MCP Tools（`mounts` / `list` / `search` / `read` / `links` / `backlinks` / `metadata_get` / `metadata_set` / `link_add` / `link_delete`）
 - MCP Resources（`mindmount://<mount-id>/documents/<document-id>`）
 - 閲覧専用 Web ビューア（マウント一覧、ページ、検索、参照・バックリンク）

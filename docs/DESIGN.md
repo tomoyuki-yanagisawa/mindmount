@@ -46,7 +46,8 @@ Mindmount は、自分のメモリを AI と共有するためのローカルサ
 ```text
 main.rs
   ├── cli/                CLI アダプタ
-  │     ├── mod.rs        clap 定義、コマンド分岐、ロック
+  │     ├── mod.rs        clap 定義、コマンド分岐
+  │     ├── client.rs     デーモン API の HTTP クライアント
   │     └── output.rs     CLI 表示
   ├── api/                 CLI 用 HTTP API（`/api/*`）
   ├── daemon/             デーモン（Web / MCP HTTP / API / 監視）
@@ -58,7 +59,7 @@ main.rs
   │     └── document.rs   ページの読み取り
   ├── config/             設定・パス
   │     ├── mod.rs        config.toml、マウント検証
-  │     └── paths.rs      XDG パス、ディレクトリ、ロック
+  │     └── paths.rs      XDG config / data / state / cache
   ├── core/               ドメイン型・識別子・解析
   │     ├── document.rs   Markdown メタデータ
   │     ├── id.rs         Snowflake ID
@@ -79,7 +80,7 @@ CLI はデーモンの HTTP API だけを使い、SQLite を直接開かない�
 | `cli/mod.rs` | コマンド、引数、ヘルプの定義、HTTP クライアントへの分岐 |
 | `cli/client.rs` | デーモン API の HTTP クライアントと接続エラー |
 | `cli/output.rs` | CLI 向けの表示 |
-| `daemon/mod.rs` | デーモン起動、Web / MCP HTTP / API の統合、監視 |
+| `daemon/mod.rs` | デーモン起動、OS サービス管理、Web / MCP HTTP / API の統合、監視 |
 | `api/mod.rs` | CLI 用 HTTP API、Bearer 認証、JSON エラー |
 | `mcp/mod.rs` | MCP Tools / Resources、HTTP サービス |
 | `web/mod.rs` | Axum / Askama による閲覧専用ビューア |
@@ -87,7 +88,7 @@ CLI はデーモンの HTTP API だけを使い、SQLite を直接開かない�
 | `usecase/index.rs` | 再 index・ページ・検索・参照（出力なし） |
 | `usecase/document.rs` | ページの読み取り（出力なし） |
 | `config/mod.rs` | `config.toml`、マウント検証、ノード ID |
-| `config/paths.rs` | XDG パス解決、データディレクトリ、ロック |
+| `config/paths.rs` | XDG パス解決、config / data / state / cache、旧レイアウト移行 |
 | `core/document.rs` | frontmatter、タイトル、SHA-256、ドメイン型 `Document` |
 | `core/id.rs` | Snowflake ID の発行と永続状態 |
 | `core/reference.rs` | リンク抽出・解決、`ResolvedReference` |
@@ -410,6 +411,26 @@ mindmount version
 `daemon.endpoint`、トークンは `credentials.toml` から読み込みます。
 `mindmount -p ... -d ...` のルート実行は、マウント登録と index 構築のショートカットです。
 
+### 9.1 XDG ディレクトリと OS サービス
+
+`etcetera` の XDG 戦略を使い、macOS / Linux で同じ配置にします。
+
+| 種別 | 内容 | 既定 |
+|---|---|---|
+| config | `config.toml`、`credentials.toml` | `~/.config/mindmount/` |
+| data | `mindmount.sqlite`、`id-state` | `~/.local/share/mindmount/` |
+| state | daemon lock / pid / endpoint / log | `~/.local/state/mindmount/` |
+| cache | キャッシュ | `~/.cache/mindmount/` |
+
+旧レイアウトの `config/db/mindmount.sqlite` と `config/id-state` は、初回起動時に
+data へ移動します。
+
+`daemon start|stop|restart` は `service-manager` を通じて launchd user agent /
+systemd user service を操作します。`daemon run` はサービス管理を使わない
+フォアグラウンド実行です。`daemon status` はサービス状態・プロセス・API 応答を
+分けて表示します。テストやサービス管理を使えない環境では
+`MINDMOUNT_DISABLE_SERVICE` でサービス操作を無効化できます。
+
 ## 10. Web / MCP の設計方針
 
 ### 10.1 ローカル Web は閲覧専用
@@ -534,7 +555,7 @@ UI とプロトコルの層を分離し、どちらからも同じドメイン�
 - Search: 実ファイルの grep、日本語、文字列 / 正規表現、ファイル名絞り込み、行番号、前後文脈、件数上限
 - MCP: initialize、tools/list、resources/list / read、read の HTTP 結合テスト
 - API: Bearer 認証、管理・検索・文書・メタデータ・Knowledge Links
-- Daemon: バックグラウンド起動、Web、MCP HTTP の initialize、停止
+- Daemon: OS サービス起動、Web、MCP HTTP の initialize、停止
 - Web: マウント一覧、ページ表示、検索、Host / Origin 拒否、実サーバーの HTTP 応答
 
 ### 12.2 統合テスト
@@ -583,7 +604,6 @@ cargo fmt --all -- --check
 - Web は閲覧専用で、検索はサーバー描画（部分更新なし）
 - CLI はデーモン経由ではなく、同じ usecase をローカルで実行する
 - ローカル Web UI は閲覧専用（編集機能なし）
-- 複数プロセス間の index 更新は完全には直列化していない
 - Snowflake のノード ID 衝突を跨端末で完全には防げない
 - DB を削除すると、DB 独自メタデータ・Knowledge Links・内部 ID の対応は失われる
 - ファイルが消えた文書は `missing_at` で保持し、孤立した文書を許容する
@@ -594,5 +614,4 @@ cargo fmt --all -- --check
 
 - Wiki リンクの同名ページ・曖昧性の解決規則
 - frontmatter ID の移行と衝突解決
-- 設定を `XDG_CONFIG_HOME` から `XDG_DATA_HOME` へ移す時期
 - Web UI の閲覧体験（検索・参照表示）の改善

@@ -1,9 +1,9 @@
-use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use mindmount::config::{Config, Credentials};
@@ -14,7 +14,7 @@ struct TestEnv {
     config_home: PathBuf,
     project: PathBuf,
     notes: PathBuf,
-    daemon: Cell<bool>,
+    daemon: RefCell<Option<Child>>,
 }
 
 impl TestEnv {
@@ -41,14 +41,18 @@ impl TestEnv {
             config_home,
             project,
             notes,
-            daemon: Cell::new(false),
+            daemon: RefCell::new(None),
         }
     }
 
     fn command(&self) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_mindmount"));
         command.env("XDG_CONFIG_HOME", &self.config_home);
+        command.env("XDG_DATA_HOME", self.temp.path().join("data"));
+        command.env("XDG_STATE_HOME", self.temp.path().join("state"));
+        command.env("XDG_CACHE_HOME", self.temp.path().join("cache"));
         command.env("HOME", self.temp.path());
+        command.env("MINDMOUNT_DISABLE_SERVICE", "1");
         command
     }
 
@@ -70,22 +74,45 @@ impl TestEnv {
     }
 
     fn ensure_daemon(&self) {
-        if self.daemon.get() {
+        if self.daemon.borrow().is_some() {
             return;
         }
-        let output = self.run_native(&["daemon", "start", "--port", "0"]);
-        assert_success(&output);
-        self.daemon.set(true);
+        let child = self
+            .command()
+            .args(["daemon", "run", "--port", "0"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to start the test daemon");
+        self.daemon.replace(Some(child));
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !self.endpoint_path().is_file() {
+            assert!(Instant::now() < deadline, "test daemon did not start");
+            std::thread::sleep(Duration::from_millis(50));
+        }
     }
 
-    fn stop_daemon(&self) {
-        if self.daemon.replace(false) {
-            let _ = self.run_native(&["daemon", "stop"]);
-        }
+    fn stop_daemon(&self) -> Option<Output> {
+        let mut child = self.daemon.borrow_mut().take()?;
+        let stop = self
+            .command()
+            .args(["daemon", "stop"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to stop the test daemon");
+        // Reap the daemon while `daemon stop` waits for it, so it does not
+        // remain a zombie that `kill -0` still reports as running.
+        let _ = child.wait();
+        stop.wait_with_output().ok()
+    }
+
+    fn endpoint_path(&self) -> PathBuf {
+        self.temp.path().join("state/mindmount/daemon.endpoint")
     }
 
     fn endpoint(&self) -> String {
-        fs::read_to_string(self.config_home.join("mindmount/daemon.endpoint"))
+        fs::read_to_string(self.endpoint_path())
             .expect("daemon endpoint")
             .trim()
             .to_string()
@@ -100,7 +127,7 @@ impl TestEnv {
     }
 
     fn database_path(&self) -> PathBuf {
-        self.config_home.join("mindmount/db/mindmount.sqlite")
+        self.temp.path().join("data/mindmount/mindmount.sqlite")
     }
 
     fn load_config(&self) -> Config {
@@ -123,7 +150,7 @@ impl TestEnv {
 
 impl Drop for TestEnv {
     fn drop(&mut self) {
-        self.stop_daemon();
+        let _ = self.stop_daemon();
     }
 }
 
@@ -459,16 +486,20 @@ fn restricts_existing_data_directory_and_database_permissions() {
     use std::os::unix::fs::PermissionsExt;
 
     let env = TestEnv::new();
-    let data = env.config_home.join("mindmount");
-    let db_dir = data.join("db");
-    fs::create_dir_all(&db_dir).unwrap();
-    fs::set_permissions(&data, fs::Permissions::from_mode(0o755)).unwrap();
-    fs::set_permissions(&db_dir, fs::Permissions::from_mode(0o755)).unwrap();
+    let config = env.config_home.join("mindmount");
+    let data = env.temp.path().join("data/mindmount");
+    let state = env.temp.path().join("state/mindmount");
+    fs::create_dir_all(&config).unwrap();
+    fs::create_dir_all(&data).unwrap();
+    fs::create_dir_all(&state).unwrap();
+    for path in [&config, &data, &state] {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
     assert_success(&env.mount("Notes"));
     fs::set_permissions(env.database_path(), fs::Permissions::from_mode(0o644)).unwrap();
-    env.stop_daemon();
+    let _ = env.stop_daemon();
     assert_success(&env.run(&["mount", "list"]));
-    for path in [&data, &db_dir, &env.database_path()] {
+    for path in [&config, &data, &state, &env.database_path()] {
         assert_eq!(
             fs::metadata(path).unwrap().permissions().mode() & 0o077,
             0,
@@ -629,7 +660,7 @@ fn rejects_missing_directories() {
 fn reindex_rebuilds_a_deleted_database() {
     let env = TestEnv::new();
     assert_success(&env.mount("Notes"));
-    env.stop_daemon();
+    let _ = env.stop_daemon();
 
     for suffix in ["", "-wal", "-shm"] {
         let path = PathBuf::from(format!("{}{suffix}", env.database_path().display()));
@@ -711,7 +742,7 @@ fn daemon_start_rejects_non_loopback_hosts() {
 fn daemon_run_serves_mounts() {
     let env = TestEnv::new();
     assert_success(&env.mount("Notes"));
-    env.stop_daemon();
+    let _ = env.stop_daemon();
 
     let port = std::net::TcpListener::bind(("127.0.0.1", 0))
         .unwrap()
@@ -821,7 +852,7 @@ fn daemon_serves_web_and_mcp() {
         "{response}"
     );
 
-    let stop = env.run(&["daemon", "stop"]);
+    let stop = env.stop_daemon().expect("test daemon was running");
     assert_success(&stop);
     assert!(stdout(&stop).contains("Stopped"), "{}", stdout(&stop));
 }

@@ -1,6 +1,7 @@
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -13,6 +14,7 @@ struct TestEnv {
     config_home: PathBuf,
     project: PathBuf,
     notes: PathBuf,
+    daemon: RefCell<Option<Child>>,
 }
 
 impl TestEnv {
@@ -39,21 +41,85 @@ impl TestEnv {
             config_home,
             project,
             notes,
+            daemon: RefCell::new(None),
         }
     }
 
     fn command(&self) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_mindmount"));
         command.env("XDG_CONFIG_HOME", &self.config_home);
+        command.env("XDG_DATA_HOME", self.temp.path().join("data"));
+        command.env("XDG_STATE_HOME", self.temp.path().join("state"));
+        command.env("XDG_CACHE_HOME", self.temp.path().join("cache"));
         command.env("HOME", self.temp.path());
+        command.env("MINDMOUNT_DISABLE_SERVICE", "1");
         command
     }
 
     fn run(&self, args: &[&str]) -> Output {
+        if needs_daemon(args) {
+            self.ensure_daemon();
+        }
         self.command()
             .args(args)
             .output()
             .expect("failed to run mindmount")
+    }
+
+    fn run_native(&self, args: &[&str]) -> Output {
+        self.command()
+            .args(args)
+            .output()
+            .expect("failed to run mindmount")
+    }
+
+    fn ensure_daemon(&self) {
+        if self.daemon.borrow().is_some() {
+            return;
+        }
+        let child = self
+            .command()
+            .args(["daemon", "run", "--port", "0"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to start the test daemon");
+        self.daemon.replace(Some(child));
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !self.endpoint_path().is_file() {
+            assert!(Instant::now() < deadline, "test daemon did not start");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    fn stop_daemon(&self) -> Option<Output> {
+        let mut child = self.daemon.borrow_mut().take()?;
+        let stop = self
+            .command()
+            .args(["daemon", "stop"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to stop the test daemon");
+        // Reap the daemon while `daemon stop` waits for it, so it does not
+        // remain a zombie that `kill -0` still reports as running.
+        let _ = child.wait();
+        stop.wait_with_output().ok()
+    }
+
+    fn endpoint_path(&self) -> PathBuf {
+        self.temp.path().join("state/mindmount/daemon.endpoint")
+    }
+
+    fn endpoint(&self) -> String {
+        fs::read_to_string(self.endpoint_path())
+            .expect("daemon endpoint")
+            .trim()
+            .to_string()
+    }
+
+    fn port(&self) -> u16 {
+        self.endpoint().rsplit(':').next().unwrap().parse().unwrap()
     }
 
     fn config_path(&self) -> PathBuf {
@@ -61,7 +127,7 @@ impl TestEnv {
     }
 
     fn database_path(&self) -> PathBuf {
-        self.config_home.join("mindmount/db/mindmount.sqlite")
+        self.temp.path().join("data/mindmount/mindmount.sqlite")
     }
 
     fn load_config(&self) -> Config {
@@ -82,6 +148,16 @@ impl TestEnv {
     }
 }
 
+impl Drop for TestEnv {
+    fn drop(&mut self) {
+        let _ = self.stop_daemon();
+    }
+}
+
+fn needs_daemon(args: &[&str]) -> bool {
+    !matches!(args.first(), None | Some(&"daemon") | Some(&"version"))
+}
+
 fn assert_success(output: &Output) {
     assert!(
         output.status.success(),
@@ -97,25 +173,6 @@ fn assert_failure(output: &Output) {
 
 fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
-}
-
-fn mcp_call(
-    stdin: &mut impl Write,
-    receiver: &std::sync::mpsc::Receiver<String>,
-    id: u64,
-    request: &str,
-) -> serde_json::Value {
-    writeln!(stdin, "{request}").unwrap();
-    stdin.flush().unwrap();
-    loop {
-        let line = receiver
-            .recv_timeout(Duration::from_secs(10))
-            .expect("no MCP response");
-        let value: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
-        if value.get("id") == Some(&serde_json::json!(id)) {
-            return value;
-        }
-    }
 }
 
 fn stderr(output: &Output) -> String {
@@ -144,15 +201,6 @@ fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     let mut files = BTreeMap::new();
     walk(root, root, &mut files);
     files
-}
-
-struct WatchProcess(Child);
-
-impl Drop for WatchProcess {
-    fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
-    }
 }
 
 fn wait_for_pages(env: &TestEnv, expected: &str) {
@@ -211,14 +259,6 @@ fn watch_eventually_reindexes_after_temporary_file_absence() {
     .unwrap();
     assert_success(&env.mount("Notes"));
     fs::write(env.notes.join("ready.md"), "# Watch ready\n").unwrap();
-    let child = env
-        .command()
-        .args(["index", "watch"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let _watch = WatchProcess(child);
     wait_for_pages(&env, "Watch ready");
     fs::rename(
         env.notes.join("index.md"),
@@ -258,14 +298,6 @@ fn watch_tracks_git_checkout() {
     git(&env.project, &["switch", "main"]);
     assert_success(&env.mount("Notes"));
     fs::write(env.notes.join("ready.md"), "# Watch ready\n").unwrap();
-    let child = env
-        .command()
-        .args(["index", "watch"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let _watch = WatchProcess(child);
     wait_for_pages(&env, "Watch ready");
     git(&env.project, &["switch", "second"]);
     wait_for_pages(&env, "Second branch");
@@ -278,14 +310,6 @@ fn watch_reindexes_at_start_and_after_atomic_save() {
     let env = TestEnv::new();
     assert_success(&env.mount("Notes"));
     fs::write(env.notes.join("index.md"), "# Startup change\n").unwrap();
-    let child = env
-        .command()
-        .args(["index", "watch"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let _watch = WatchProcess(child);
     wait_for_pages(&env, "Startup change");
 
     fs::write(env.notes.join(".new.md"), "# Atomic change\n").unwrap();
@@ -374,7 +398,7 @@ fn references_and_backlinks_follow_rescans() {
     assert!(stdout(&backlinks).contains("100\tsource.md"));
 
     fs::remove_file(env.notes.join("target.md")).unwrap();
-    assert_success(&env.run(&["index", "rescan"]));
+    assert_success(&env.run(&["mount", "sync", "--all"]));
     let links = stdout(&env.run(&["index", "references", "100"]));
     assert!(links.contains("-\t./target.md#heading"), "{links}");
     let backlinks = env.run(&["index", "backlinks", "200"]);
@@ -396,7 +420,7 @@ fn wiki_links_remain_unresolved_when_ambiguous_then_resolve() {
     assert_success(&env.mount("Notes"));
     assert!(stdout(&env.run(&["index", "references", "100"])).contains("-\tShared\twiki"));
     fs::remove_file(env.notes.join("b.md")).unwrap();
-    assert_success(&env.run(&["index", "rescan"]));
+    assert_success(&env.run(&["mount", "sync", "--all"]));
     assert!(stdout(&env.run(&["index", "references", "100"])).contains("201\tShared\twiki"));
 }
 
@@ -417,11 +441,11 @@ fn searches_japanese_and_tracks_index_changes() {
     }
     assert!(stdout(&env.run(&["index", "search", "存在しない"])).contains("No matching pages"));
     fs::write(env.notes.join("japanese.md"), "# 新しい内容\n").unwrap();
-    assert_success(&env.run(&["index", "rescan"]));
+    assert_success(&env.run(&["mount", "sync", "--all"]));
     assert!(stdout(&env.run(&["index", "search", "日本語"])).contains("No matching pages"));
     assert!(stdout(&env.run(&["index", "search", "新しい"])).contains("japanese.md"));
     fs::remove_file(env.notes.join("japanese.md")).unwrap();
-    assert_success(&env.run(&["index", "rescan"]));
+    assert_success(&env.run(&["mount", "sync", "--all"]));
     assert!(stdout(&env.run(&["index", "search", "新しい"])).contains("No matching pages"));
     let mount_id = env.load_config().mounts[0].id.to_string();
     assert_success(&env.run(&["mount", "remove", &mount_id]));
@@ -462,15 +486,20 @@ fn restricts_existing_data_directory_and_database_permissions() {
     use std::os::unix::fs::PermissionsExt;
 
     let env = TestEnv::new();
-    let data = env.config_home.join("mindmount");
-    let db_dir = data.join("db");
-    fs::create_dir_all(&db_dir).unwrap();
-    fs::set_permissions(&data, fs::Permissions::from_mode(0o755)).unwrap();
-    fs::set_permissions(&db_dir, fs::Permissions::from_mode(0o755)).unwrap();
+    let config = env.config_home.join("mindmount");
+    let data = env.temp.path().join("data/mindmount");
+    let state = env.temp.path().join("state/mindmount");
+    fs::create_dir_all(&config).unwrap();
+    fs::create_dir_all(&data).unwrap();
+    fs::create_dir_all(&state).unwrap();
+    for path in [&config, &data, &state] {
+        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    }
     assert_success(&env.mount("Notes"));
     fs::set_permissions(env.database_path(), fs::Permissions::from_mode(0o644)).unwrap();
+    let _ = env.stop_daemon();
     assert_success(&env.run(&["mount", "list"]));
-    for path in [&data, &db_dir, &env.database_path()] {
+    for path in [&config, &data, &state, &env.database_path()] {
         assert_eq!(
             fs::metadata(path).unwrap().permissions().mode() & 0o077,
             0,
@@ -631,6 +660,7 @@ fn rejects_missing_directories() {
 fn reindex_rebuilds_a_deleted_database() {
     let env = TestEnv::new();
     assert_success(&env.mount("Notes"));
+    let _ = env.stop_daemon();
 
     for suffix in ["", "-wal", "-shm"] {
         let path = PathBuf::from(format!("{}{suffix}", env.database_path().display()));
@@ -640,7 +670,7 @@ fn reindex_rebuilds_a_deleted_database() {
     }
     assert!(!env.database_path().exists());
 
-    let output = env.run(&["index", "rescan"]);
+    let output = env.run(&["mount", "sync", "--all"]);
     assert_success(&output);
     assert!(stdout(&output).contains("3 files"));
     assert!(env.database_path().is_file());
@@ -664,7 +694,7 @@ fn root_invocation_mounts_and_notes_the_phase_four_server() {
     ]);
     assert_success(&output);
     assert!(stdout(&output).contains("Mounted \"Root note\""));
-    assert!(stdout(&output).contains("mindmount serve"));
+    assert!(stdout(&output).contains("mindmount daemon start"));
     assert_eq!(env.load_config().mounts.len(), 1);
 }
 
@@ -682,34 +712,37 @@ fn without_arguments_prints_help() {
 fn refuses_concurrent_operations_without_modifying_configuration() {
     let env = TestEnv::new();
     assert_success(&env.mount("Notes"));
-    let before = fs::read(env.config_path()).unwrap();
-    let lock = fs::OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(env.config_home.join("mindmount/mindmount.lock"))
-        .unwrap();
-    lock.try_lock().unwrap();
-    let output = env.run(&["mount", "list"]);
+    let output = env.run(&["daemon", "start", "--port", "0"]);
     assert_failure(&output);
-    assert!(stderr(&output).contains("another Mindmount process may be running"));
-    assert_eq!(fs::read(env.config_path()).unwrap(), before);
-    drop(lock);
-    assert_success(&env.run(&["mount", "list"]));
+    assert!(stderr(&output).contains("already running"));
 }
 
 #[test]
-fn serve_rejects_non_loopback_hosts() {
+fn cli_fails_cleanly_when_the_daemon_is_stopped() {
+    let env = TestEnv::new();
+    let output = env.run_native(&["mount", "list"]);
+    assert_failure(&output);
+    assert!(
+        stderr(&output).contains("Mindmount daemon is not running"),
+        "{}",
+        stderr(&output)
+    );
+}
+
+#[test]
+fn daemon_start_rejects_non_loopback_hosts() {
     let env = TestEnv::new();
 
-    let output = env.run(&["serve", "--host", "0.0.0.0"]);
+    let output = env.run(&["daemon", "start", "--host", "0.0.0.0"]);
     assert_failure(&output);
     assert!(stderr(&output).contains("loopback"));
 }
 
 #[test]
-fn serve_starts_and_serves_mounts() {
+fn daemon_run_serves_mounts() {
     let env = TestEnv::new();
     assert_success(&env.mount("Notes"));
+    let _ = env.stop_daemon();
 
     let port = std::net::TcpListener::bind(("127.0.0.1", 0))
         .unwrap()
@@ -718,7 +751,7 @@ fn serve_starts_and_serves_mounts() {
         .port();
     let mut child = env
         .command()
-        .args(["serve", "--port", &port.to_string()])
+        .args(["daemon", "run", "--port", &port.to_string()])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
@@ -726,7 +759,7 @@ fn serve_starts_and_serves_mounts() {
 
     let deadline = Instant::now() + Duration::from_secs(10);
     while std::net::TcpStream::connect(("127.0.0.1", port)).is_err() {
-        assert!(Instant::now() < deadline, "serve did not start");
+        assert!(Instant::now() < deadline, "daemon did not start");
         std::thread::sleep(Duration::from_millis(100));
     }
 
@@ -777,15 +810,7 @@ fn get_until_ready(port: u16, path: &str, expected: &str) {
 fn daemon_serves_web_and_mcp() {
     let env = TestEnv::new();
     assert_success(&env.mount("Notes"));
-    let port = std::net::TcpListener::bind(("127.0.0.1", 0))
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-
-    let start = env.run(&["daemon", "start", "--port", &port.to_string()]);
-    assert_success(&start);
-    assert!(stdout(&start).contains("Started"), "{}", stdout(&start));
+    let port = env.port();
 
     get_until_ready(port, "/mounts", "Notes");
     let status = env.run(&["daemon", "status"]);
@@ -800,8 +825,22 @@ fn daemon_serves_web_and_mcp() {
     let unauthorized = http_request(port, &request);
     assert!(unauthorized.starts_with("HTTP/1.1 401"), "{unauthorized}");
 
+    let api_request = format!(
+        "GET /api/admin/status HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
+    );
+    let unauthorized = http_request(port, &api_request);
+    assert!(unauthorized.starts_with("HTTP/1.1 401"), "{unauthorized}");
+
     let credentials =
         Credentials::load(&env.config_home.join("mindmount/credentials.toml")).unwrap();
+    let authorized = format!(
+        "GET /api/admin/status HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {}\r\nConnection: close\r\n\r\n",
+        credentials.mcp_token
+    );
+    let response = http_request(port, &authorized);
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    assert!(response.contains("\"status\":\"ok\""), "{response}");
+
     let request = format!(
         "POST /mcp HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nAuthorization: Bearer {}\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         credentials.mcp_token,
@@ -813,7 +852,7 @@ fn daemon_serves_web_and_mcp() {
         "{response}"
     );
 
-    let stop = env.run(&["daemon", "stop"]);
+    let stop = env.stop_daemon().expect("test daemon was running");
     assert_success(&stop);
     assert!(stdout(&stop).contains("Stopped"), "{}", stdout(&stop));
 }
@@ -892,166 +931,4 @@ fn mount_sync_updates_a_single_mount() {
     let output = env.run(&["mount", "sync", &mount_id]);
     assert_success(&output);
     assert!(stdout(&env.run(&["index", "pages"])).contains("Synced"));
-}
-
-#[test]
-fn mcp_lists_tools_and_reads_a_page() {
-    let env = TestEnv::new();
-    assert_success(&env.mount("Notes"));
-    let mount = env.load_config().mounts[0].clone();
-
-    let mut child = env
-        .command()
-        .args(["mcp"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
-    let mut stdin = child.stdin.take().unwrap();
-    let stdout = child.stdout.take().unwrap();
-    let (sender, receiver) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut reader = BufReader::new(stdout);
-        loop {
-            let mut line = String::new();
-            if reader.read_line(&mut line).unwrap_or(0) == 0 {
-                break;
-            }
-            let _ = sender.send(line);
-        }
-    });
-
-    let init = mcp_call(
-        &mut stdin,
-        &receiver,
-        1,
-        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#,
-    );
-    assert!(init["result"]["protocolVersion"].is_string(), "{init}");
-
-    writeln!(
-        stdin,
-        r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#
-    )
-    .unwrap();
-    stdin.flush().unwrap();
-
-    let tools = mcp_call(
-        &mut stdin,
-        &receiver,
-        2,
-        r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#,
-    );
-    let names: Vec<&str> = tools["result"]["tools"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .filter_map(|tool| tool["name"].as_str())
-        .collect();
-    for expected in [
-        "mounts",
-        "list",
-        "search",
-        "read",
-        "write",
-        "links",
-        "backlinks",
-        "metadata_get",
-        "metadata_set",
-        "link_add",
-        "link_delete",
-    ] {
-        assert!(names.contains(&expected), "missing {expected}: {names:?}");
-    }
-
-    let read_request = format!(
-        r#"{{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{{"name":"read","arguments":{{"mount_id":{},"path":"index.md"}}}}}}"#,
-        mount.id
-    );
-    let read = mcp_call(&mut stdin, &receiver, 3, &read_request);
-    let content = read["result"]["structuredContent"]["content"]
-        .as_str()
-        .unwrap();
-    assert!(content.contains("Index"), "{read}");
-    let document_id = read["result"]["structuredContent"]["id"].as_i64().unwrap();
-    let expected_hash = read["result"]["structuredContent"]["content_hash"]
-        .as_str()
-        .unwrap()
-        .to_string();
-
-    let resources = mcp_call(
-        &mut stdin,
-        &receiver,
-        4,
-        r#"{"jsonrpc":"2.0","id":4,"method":"resources/list"}"#,
-    );
-    let uri = format!("mindmount://{}/documents/{document_id}", mount.id);
-    assert!(
-        resources["result"]["resources"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|resource| resource["uri"].as_str() == Some(uri.as_str())),
-        "{resources}"
-    );
-    let resource_read = mcp_call(
-        &mut stdin,
-        &receiver,
-        5,
-        &serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 5,
-            "method": "resources/read",
-            "params": { "uri": uri },
-        })
-        .to_string(),
-    );
-    assert!(
-        resource_read["result"]["contents"][0]["text"]
-            .as_str()
-            .unwrap()
-            .contains("Index"),
-        "{resource_read}"
-    );
-
-    let write = mcp_call(
-        &mut stdin,
-        &receiver,
-        6,
-        &serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 6,
-            "method": "tools/call",
-            "params": {
-                "name": "write",
-                "arguments": {
-                    "mount_id": mount.id,
-                    "path": "index.md",
-                    "content": "# Updated\n",
-                    "expected_hash": expected_hash,
-                },
-            },
-        })
-        .to_string(),
-    );
-    assert_eq!(
-        write["result"]["structuredContent"]["path"].as_str(),
-        Some("index.md"),
-        "{write}"
-    );
-
-    let reread_request = format!(
-        r#"{{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{{"name":"read","arguments":{{"mount_id":{},"path":"index.md"}}}}}}"#,
-        mount.id
-    );
-    let reread = mcp_call(&mut stdin, &receiver, 7, &reread_request);
-    assert_eq!(
-        reread["result"]["structuredContent"]["content"].as_str(),
-        Some("# Updated\n"),
-        "{reread}"
-    );
-
-    let _ = child.kill();
-    let _ = child.wait();
 }

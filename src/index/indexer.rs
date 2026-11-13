@@ -9,6 +9,7 @@ use std::path::{Component, Path};
 
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use tracing::warn;
 
 use crate::config::{Config, Mount};
@@ -18,7 +19,7 @@ use crate::core::reference::{self, ResolvedReference};
 use crate::db::Database;
 use crate::storage::filesystem::MountRoot;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncReport {
     pub scanned: usize,
     pub added: usize,
@@ -37,19 +38,19 @@ impl SyncReport {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct MountSync {
     pub mount: Mount,
     pub report: SyncReport,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct SyncFailure {
     pub mount: Mount,
     pub message: String,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize, Deserialize)]
 pub struct SyncOutcome {
     pub synced: Vec<MountSync>,
     pub failures: Vec<SyncFailure>,

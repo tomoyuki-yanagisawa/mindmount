@@ -28,7 +28,7 @@ Phase 1（CLI / Storage）、Phase 2（検索・参照・監視）、Phase 3（M
 | 5 | リリース | 未着手 |
 
 ローカル版の Web UI は**閲覧専用**です。人間による編集は vim などで行い、
-`index rescan` で反映します。Web UI での編集は提供しません。
+デーモンのファイル監視が自動で index に反映します。Web UI での編集は提供しません。
 詳細は [docs/DECISIONS.md](docs/DECISIONS.md) の D-001 を参照してください。
 
 ## スコープ
@@ -38,7 +38,7 @@ Mindmount は、個人のローカル環境で動く「個人のホーム」で�
 - ローカルの Markdown を移動・変換せずに扱う
 - MCP 経由で AI から自分のメモリを検索・参照できるようにする
 - 人間は読み取り専用の Web ビューアで閲覧する
-- 編集は vim などで行い、`index rescan` で反映する
+- 編集は vim などで行い、デーモンが自動で index に反映する
 
 単一ユーザー・ローカル専用です。Web UI での編集は提供しません。
 
@@ -57,6 +57,9 @@ cargo test
 ## クイックスタート
 
 ```bash
+# デーモン（Web ビューア + MCP HTTP + API + 監視）
+cargo run -- daemon start
+
 # マウント登録と index 構築
 cargo run -- mount add -p ~/Project/app -d ./notes -n "Project notes"
 
@@ -66,14 +69,13 @@ cargo run -- mount list
 # index 済みページ一覧
 cargo run -- index pages
 
-# vim などで編集したら index を再構築
-cargo run -- index rescan
+# vim などで編集するとデーモンが自動で index を更新
+vim ~/Project/app/notes/index.md
 
 # マウント解除（Markdown ファイルは削除しない）
 cargo run -- mount remove <mount-id>
 
-# デーモン（Web ビューア + MCP HTTP + 監視）
-cargo run -- daemon start
+# デーモンの状態確認と停止
 cargo run -- daemon status
 cargo run -- daemon stop
 ```
@@ -85,32 +87,46 @@ CLI は責務ごとにグループ化されています。
 ```text
 mindmount daemon start|stop|restart|status|run
 mindmount mount add|list|remove|sync
-mindmount index rescan|watch|pages|search|references|backlinks
+mindmount index pages|search|references|backlinks
 mindmount metadata get|set
 mindmount link add|delete
 mindmount backup <PATH>
 mindmount version
-mindmount serve
-mindmount mcp
 ```
 
-`daemon` は Web ビューア、MCP Streamable HTTP（`/mcp`）、ファイル監視を1プロセスで提供します。
-`serve` は `daemon run` の別名です。`mcp` は任意の stdio アダプタとして残しています。
+`daemon` は Web ビューア、MCP Streamable HTTP（`/mcp`）、CLI 用 HTTP API（`/api/*`）、
+ファイル監視を1プロセスで提供します。`daemon start` を実行してから CLI を使ってください。
+CLI は HTTP API 経由で操作し、デーモンが停止している場合はエラーになります。
+Mindmount は Markdown を編集せず、MCP にも書き込み Tool はありません。
 bind は `127.0.0.1` / `::1` のループバックに限定されます。
 
 ## ローカルデータ
 
+XDG 方式で config / data / state / cache を分離します。
+
 ```text
 $XDG_CONFIG_HOME/mindmount/   # 未設定時: ~/.config/mindmount/
 ├── config.toml               # マウント設定の正本
-├── id-state                  # ID 発行の予約状態
-├── mindmount.lock            # CLI 操作のプロセス間ロック
+└── credentials.toml          # CLI / MCP HTTP の Bearer Token
+
+$XDG_DATA_HOME/mindmount/     # 未設定時: ~/.local/share/mindmount/
+├── mindmount.sqlite          # 派生 index と DB 独自データ
+└── id-state                  # ID 発行の予約状態
+
+$XDG_STATE_HOME/mindmount/    # 未設定時: ~/.local/state/mindmount/
 ├── mindmount.daemon.lock     # デーモンの二重起動防止
 ├── daemon.pid                # デーモンの PID
-├── daemon.log                # バックグラウンド起動時のログ
-├── credentials.toml          # MCP HTTP の Bearer Token
-└── db/mindmount.sqlite       # 派生 index と DB 独自データ
+├── daemon.endpoint           # CLI が接続する URL
+└── mindmount.log             # サービス起動時のログ
+
+$XDG_CACHE_HOME/mindmount/    # 未設定時: ~/.cache/mindmount/
 ```
+
+旧レイアウトの `config/db/mindmount.sqlite` と `config/id-state` は、初回起動時に
+data ディレクトリへ移動されます。
+
+`daemon start` は macOS の launchd、Linux の systemd user service に登録します。
+`daemon run` はサービス管理を使わずフォアグラウンドで起動します。
 
 Markdown ファイルはマウント先にそのまま残ります。マウントや index 構築で
 既存ファイルを書き換えることはありません。`mount remove` も Markdown を
@@ -126,7 +142,7 @@ Markdown ファイルはマウント先にそのまま残ります。マウン�
 - 12bit: 同一ミリ秒内の連番
 
 frontmatter に `id` がない Markdown には内部 ID を割り当てます。内部 ID は
-`index rescan` では維持されますが、DB 再構築後の永続性は保証されません。
+再同期では維持されますが、DB 再構築後の永続性は保証されません。
 安定した ID が必要な場合は frontmatter に `id` を付与してください。
 
 ```yaml

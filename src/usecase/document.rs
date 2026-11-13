@@ -1,14 +1,13 @@
-//! Reading and writing a page through the mount.
+//! Reading a page through the mount.
 
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
 
-use crate::config::{AppPaths, Config, Mount};
+use crate::config::{Config, Mount};
 use crate::core::document::{content_hash, Document};
-use crate::core::id::Snowflake;
 use crate::db::Database;
-use crate::index::indexer;
 use crate::storage::filesystem::MountRoot;
 
 #[derive(Debug, Clone)]
@@ -17,19 +16,12 @@ pub enum DocumentTarget {
     Path { mount_id: i64, path: String },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ReadResult {
     pub mount: Mount,
     pub document: Option<Document>,
     pub relative_path: String,
     pub content: String,
-    pub content_hash: String,
-}
-
-#[derive(Debug)]
-pub struct WriteResult {
-    pub mount: Mount,
-    pub document: Document,
     pub content_hash: String,
 }
 
@@ -47,55 +39,6 @@ pub async fn read(
         document,
         relative_path,
         content,
-        content_hash: hash,
-    })
-}
-
-/// Writes a page and refreshes its index.
-///
-/// Updating an existing file requires `expected_hash` from a previous read.
-/// Creating a new file requires `expected_hash` to be absent.
-pub async fn write(
-    paths: &AppPaths,
-    database: &Database,
-    target: DocumentTarget,
-    content: &str,
-    expected_hash: Option<&str>,
-) -> Result<WriteResult> {
-    let _lock = paths.lock()?;
-    // Reload config under the lock so a concurrently added mount is visible.
-    let config = Config::load_or_create(&paths.config_file())?;
-    let (mount, relative_path, _) = resolve(&config, database, target).await?;
-    let root = MountRoot::new(&mount.directory_path)?;
-    let relative = Path::new(&relative_path);
-    let hash = content_hash(content);
-
-    if root.exists(relative)? {
-        let expected =
-            expected_hash.context("expected_hash is required to update an existing page")?;
-        let current = root.read_markdown(relative)?;
-        let current_hash = content_hash(&current);
-        if current_hash != expected {
-            bail!("page changed since it was read: expected {expected}, found {current_hash}");
-        }
-        root.write_atomic(relative, content)?;
-    } else {
-        if expected_hash.is_some() {
-            bail!("page does not exist; omit expected_hash to create it");
-        }
-        root.create_new(relative, content)?;
-    }
-
-    let mut ids = Snowflake::persistent(config.node_id, &paths.id_state_file())?;
-    indexer::sync_mount(database, mount.id, &root, &mut ids).await?;
-
-    let document = database
-        .document_by_path(mount.id, &relative_path)
-        .await?
-        .with_context(|| format!("page {relative_path} was written but not indexed"))?;
-    Ok(WriteResult {
-        mount,
-        document,
         content_hash: hash,
     })
 }
@@ -159,10 +102,12 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::config::AppPaths;
+    use crate::core::id::Snowflake;
+    use crate::index::indexer;
 
     struct Fixture {
         _temp: tempfile::TempDir,
-        paths: AppPaths,
         config: Config,
         database: Database,
         mount: Mount,
@@ -196,7 +141,6 @@ mod tests {
 
         Fixture {
             _temp: temp,
-            paths,
             config,
             database,
             mount,
@@ -235,73 +179,5 @@ mod tests {
         .unwrap();
         assert_eq!(by_path.content, by_id.content);
         assert_eq!(by_path.document.unwrap().id, 42);
-    }
-
-    #[tokio::test]
-    async fn write_requires_the_expected_hash_and_creates_pages() {
-        let fixture = fixture().await;
-        fs::write(fixture.mount.directory_path.join("page.md"), "# Before\n").unwrap();
-        let root = MountRoot::new(&fixture.mount.directory_path).unwrap();
-        let mut ids = Snowflake::new(1).unwrap();
-        indexer::sync_mount(&fixture.database, 1, &root, &mut ids)
-            .await
-            .unwrap();
-        let before = read(
-            &fixture.config,
-            &fixture.database,
-            DocumentTarget::Path {
-                mount_id: 1,
-                path: "page.md".into(),
-            },
-        )
-        .await
-        .unwrap();
-
-        let error = write(
-            &fixture.paths,
-            &fixture.database,
-            DocumentTarget::Path {
-                mount_id: 1,
-                path: "page.md".into(),
-            },
-            "# After\n",
-            Some("wrong"),
-        )
-        .await
-        .unwrap_err();
-        assert!(error.to_string().contains("changed since it was read"));
-        assert_eq!(
-            fs::read_to_string(fixture.mount.directory_path.join("page.md")).unwrap(),
-            "# Before\n"
-        );
-
-        let written = write(
-            &fixture.paths,
-            &fixture.database,
-            DocumentTarget::Path {
-                mount_id: 1,
-                path: "page.md".into(),
-            },
-            "# After\n",
-            Some(&before.content_hash),
-        )
-        .await
-        .unwrap();
-        assert_eq!(written.document.relative_path, "page.md");
-
-        let created = write(
-            &fixture.paths,
-            &fixture.database,
-            DocumentTarget::Path {
-                mount_id: 1,
-                path: "new.md".into(),
-            },
-            "# New\n",
-            None,
-        )
-        .await
-        .unwrap();
-        assert_eq!(created.document.relative_path, "new.md");
-        assert!(fixture.mount.directory_path.join("new.md").is_file());
     }
 }

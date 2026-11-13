@@ -13,6 +13,8 @@ Web UI での編集は提供しません。
 | 2 | ファイル監視、grep 検索、参照、バックリンク | 実装済み |
 | 3 | MCP サーバー | 実装済み |
 | 4 | Web ビューア（閲覧専用） | 実装済み |
+| 4.5 | CLI HTTP API | 実装済み |
+| 4.6 | XDG / OS サービス | 実装済み |
 | 5 | リリース | 未着手 |
 
 ローカル版は、MCP 連携と人間用の読み取り専用ビューアを中心に据えます。
@@ -89,7 +91,7 @@ Web UI での編集は提供しません。
 - マウント内のリンク解決、曖昧・未解決リンクの記録（実装済み）
 - `markdown_links` / `knowledge_links` / `document_metadata`（実装済み）
 - バックリンクと Knowledge Links の表示（実装済み）
-- 変更ファイルと影響する参照だけを差分更新（実装済み。全体再構築は `index rescan`）
+- 変更ファイルと影響する参照だけを差分更新（実装済み。全体再構築は `mount sync --all`）
 - マウント解除は inactive、ファイル消失は missing として保持（実装済み）
 - `index search`、`index references`、`index backlinks`（実装済み）
 - パーセントエンコードされた Markdown リンク先の解決（実装済み）
@@ -109,18 +111,16 @@ Web UI での編集は提供しません。
 
 ### 目的
 
-AI が同じ Markdown を読み書きできるようにする。
+AI が同じ Markdown を検索・参照できるようにする。
 
 ### タスク
 
 - `rmcp` の Streamable HTTP（`/mcp`、実装済み）
-- 任意の stdio アダプタ（実装済み）
 - デーモン（Web・MCP HTTP・監視を1プロセス、実装済み）
 - Tools（実装済み）
   - `mounts`
   - `search`
   - `read`
-  - `write`
   - `list`
   - `links`
   - `backlinks`
@@ -130,24 +130,18 @@ AI が同じ Markdown を読み書きできるようにする。
   - `link_delete`
 - Resources（実装済み）
   - `mindmount://<mount-id>/documents/<document-id>`
-- `write` の楽観的ロック（実装済み）
-  - `content_hash` の一致を要求
-  - 新規作成時の存在確認
-- パス指定での読み書き（実装済み）
-- stdio と HTTP の JSON-RPC 結合テスト（実装済み）
-- stdout にログを出さない運用（実装済み）
+- パス指定での読み取り（実装済み）
+- HTTP の JSON-RPC 結合テスト（実装済み）
 
 ### 完了条件
 
-AI が同じ Markdown を読み書きできること。
-stdio と HTTP の initialize / tools / resources / read / write を結合テストで確認済み。
+AI が同じ Markdown を検索・参照できること。
+HTTP の initialize / tools / resources / read を結合テストで確認済み。
 デーモンの起動・停止と、Web / MCP HTTP の同時提供も確認済み。
 OpenCode / Claude Code など実クライアントでの確認は利用環境で行う。
 
 ### 設計上の論点
 
-- 更新競合時のエラー形式
-- 書き込み時の index 同期
 - Resources 非対応クライアント向けの `read` Tool
 - MCP 経由の内容を Mindmount への指示として解釈しないこと
 
@@ -158,7 +152,7 @@ OpenCode / Claude Code など実クライアントでの確認は利用環境で
 人間がブラウザで AI と同じ知識を閲覧できるようにする。
 
 **ローカル版では編集機能を実装しない。**
-編集は vim などのエディタで行い、`index rescan` で反映する。
+編集は vim などのエディタで行い、デーモンの監視が反映する。
 Web UI での編集は提供しない。詳細は
 [DECISIONS.md](DECISIONS.md) の D-001 を参照。
 
@@ -193,6 +187,44 @@ GET /static/*
 人間がブラウザで AI と同じ知識を閲覧できること。
 マウント一覧、ページ本文、検索、参照・バックリンクを表示でき、
 Host / Origin 検証とループバック bind を備えています。
+
+## Phase 4.5: CLI HTTP API（実装済み）
+
+### 目的
+
+CLI が DB を直接開かず、デーモンが所有する状態だけを操作できるようにする。
+
+### タスク
+
+- `/api/admin/*`、`/api/search`、`/api/documents/*`、`/api/knowledge-links`（実装済み）
+- Bearer Token 認証（実装済み）
+- `reqwest` による CLI クライアント（実装済み）
+- デーモン停止時の明確なエラー（実装済み）
+- ファイル監視と API 書き込みの直列化（実装済み）
+
+### 完了条件
+
+デーモン停止中は CLI の通常操作が失敗し、起動中はすべて HTTP API 経由で動くこと。
+達成済み。
+
+## Phase 4.6: XDG / OS サービス（実装済み）
+
+### 目的
+
+設定・永続データ・実行時状態を分離し、デーモンの起動と再起動を OS に任せる。
+
+### タスク
+
+- `etcetera` による config / data / state / cache 分離（実装済み）
+- 旧レイアウトの DB と ID 状態の移行（実装済み）
+- `service-manager` による launchd / systemd user service（実装済み）
+- `daemon status` のサービス状態 + HTTP ヘルスチェック（実装済み）
+- `daemon run` のフォアグラウンド実行（実装済み）
+
+### 完了条件
+
+`daemon start` で OS サービスとして起動し、`daemon run` なしで CLI が使えること。
+サービス管理を使えない環境では `daemon run` にフォールバックできること。
 
 ## Phase 5: Release
 

@@ -20,17 +20,24 @@ cargo build
 ## クイックスタート
 
 ```bash
-# 1. プロジェクト内の notes をマウント
+# 1. デーモンを起動
+mindmount daemon start
+
+# 2. プロジェクト内の notes をマウント
 mindmount mount add -p ~/Project/app -d ./notes -n "Project notes"
 
-# 2. マウントとページを確認
+# 3. マウントとページを確認
 mindmount mount list
 mindmount index pages
 
-# 3. vim などで Markdown を編集したら index を更新
-mindmount index rescan
+# 4. vim などで編集するとデーモンが自動で index を更新する
+vim ~/Project/app/notes/index.md
 mindmount index pages
 ```
+
+CLI はデーモンの HTTP API を経由します。デーモンが停止している場合は
+`Mindmount daemon is not running.` で失敗します。自動起動や SQLite への
+直接アクセスは行いません。
 
 ## コマンド一覧
 
@@ -45,22 +52,17 @@ mindmount mount sync <MOUNT_ID> | --all
 mindmount backup <PATH>
 mindmount version
 
-mindmount index rescan
-mindmount index watch
 mindmount index pages [-m <MOUNT_ID>]
-mindmount index search <QUERY> [-m <MOUNT_ID>]
+mindmount index search <QUERY> [-m <MOUNT_ID>] [--file <TEXT>] [--regex]
 mindmount index references <DOCUMENT_ID>
 mindmount index backlinks <DOCUMENT_ID>
-
-mindmount serve [--host <HOST>] [--port <PORT>]
-mindmount mcp
 
 mindmount -p <PATH> -d <PATH> [-n <NAME>] [--host <HOST>] [--port <PORT>]
 ```
 
 | コマンド | 目的 |
 |---|---|
-| `daemon start` | Web・MCP HTTP・監視をバックグラウンドで起動する |
+| `daemon start` | Web・MCP HTTP・監視を OS サービスとして起動する |
 | `daemon stop` | デーモンを停止する |
 | `daemon restart` | デーモンを再起動する |
 | `daemon status` | デーモンの稼働状態を表示する |
@@ -71,8 +73,6 @@ mindmount -p <PATH> -d <PATH> [-n <NAME>] [--host <HOST>] [--port <PORT>]
 | `mount sync` | 指定マウント、または `--all` で全マウントを再同期する |
 | `backup` | SQLite の一貫したバックアップを作成する |
 | `version` | バージョンを表示する |
-| `index rescan` | 全マウントの index を再構築する |
-| `index watch` | ファイルの変更を監視して index を更新する |
 | `index pages` | index 済みページを一覧表示する |
 | `index search` | 実ファイルを grep 検索する |
 | `index references` | ページからのリンクを一覧表示する |
@@ -81,10 +81,9 @@ mindmount -p <PATH> -d <PATH> [-n <NAME>] [--host <HOST>] [--port <PORT>]
 | `metadata set` | DB 独自メタデータを設定する |
 | `link add` | Knowledge Link を追加する |
 | `link delete` | Knowledge Link を削除する |
-| `serve` | デーモンをフォアグラウンドで起動する（`daemon run` の別名） |
-| `mcp` | 任意の MCP stdio アダプタを起動する |
 
 引数だけの `mindmount -p ... -d ...` は、`mount add` と同じ登録・index 構築を行います。
+`daemon` 以外のコマンドはデーモンの HTTP API を使うため、事前に `daemon start` が必要です。
 
 ## mount add
 
@@ -116,7 +115,7 @@ mindmount mount add -p ~/Project/app -d ./notes -n "Project notes"
 Mounted "Project notes" (245510401681731584)
   project:   /Users/you/Project/app
   directory: /Users/you/Project/app/notes
-  indexed:   3 files, 3 added, 0 updated, 0 removed, 0 unchanged, 0 errors
+  indexed:   3 files, 3 added, 0 updated, 0 missing, 0 unchanged, 0 errors
 ```
 
 ### 登録時に起きること
@@ -128,7 +127,7 @@ Mounted "Project notes" (245510401681731584)
 5. Markdown の走査と index 構築
 
 index 構築に失敗してもマウント登録は残ります。その場合は
-`mindmount index rescan` で再試行してください。
+`mindmount mount sync --all` で再試行してください。
 
 ## mount list
 
@@ -171,14 +170,14 @@ mindmount index pages --mount 245510401681731584
 
 ```text
 ID	MOUNT	PATH	TITLE
-245510401685925888	Project notes	architecture.md	Architecture
-245510401685925889	Project notes	index.md	Index
+245510401685925888	245510401681731584	architecture.md	Architecture
+245510401685925889	245510401681731584	index.md	Index
 ```
 
 | 列 | 内容 |
 |---|---|
-| `ID` | ドキュメント ID。将来の `/page/:id` で使う |
-| `MOUNT` | マウントの表示名 |
+| `ID` | ドキュメント ID。`/page/:id` やリンク操作で使う |
+| `MOUNT` | マウント ID |
 | `PATH` | マウント先からの相対パス |
 | `TITLE` | frontmatter の `title`、最初の H1、ファイル名の順で決定 |
 
@@ -186,32 +185,23 @@ ID	MOUNT	PATH	TITLE
 
 ### 重要: `index pages` はファイルを再走査しない
 
-`index pages` は SQLite の index を読むだけです。ファイルを直接編集しても、
-`index rescan`（または同じディレクトリへの `mount add` 再実行）をするまで
-表示は更新されません。
+`index pages` は DB の index を読むだけです。デーモンが動いていればファイル変更は
+自動で反映されます。反映されない場合は `mount sync --all` で再同期してください。
 
 ```bash
 vim ~/Project/app/notes/index.md
-mindmount index pages      # まだ古い
-mindmount index rescan     # ここで反映
-mindmount index pages      # 新しい内容
+mindmount index pages           # 監視が拾えば更新済み
+mindmount mount sync --all      # 手動で再同期する場合
+mindmount index pages
 ```
 
-## index watch
+## ファイル監視
 
-```bash
-mindmount index watch
-```
-
-起動時にすべてのマウントを走査し、その後はファイルの変更を監視して再走査します。
-イベントを 500ms まとめ、設定の変更も定期的に確認します。通知漏れに備えて 30 秒ごとに
-全マウントを再走査します。`Ctrl-C` で停止します。
+デーモンがすべてのマウントを監視します。起動時にすべてのマウントを走査し、その後は
+ファイルの変更を監視して再走査します。イベントを 500ms まとめ、設定の変更も定期的に
+確認します。通知漏れに備えて 30 秒ごとに全マウントを再走査します。
 派生 index は Markdown より遅れて更新されることがあります。編集中に一時的に見えなくなった
-ファイルは、その時点で index から外れる場合があります。すぐに戻っても、次の再走査まで
-検索結果に出ないことがあります。`index rescan` で Markdown の現在の内容に index を
-合わせ直せます。
-監視は常駐中にロックを保持せず、再走査中のみロックするため、他のコマンドが同時に
-実行されると一時的にロックエラーになる場合があります。
+ファイルは、その時点で index から外れる場合があります。
 
 ## index references / backlinks
 
@@ -224,9 +214,8 @@ mindmount index backlinks <DOCUMENT_ID>
 DB に保存した Knowledge Links を表示します。リンク先は同じマウント内で解決します。Wiki リンクはページ名・タイトル・パスから
 探し、候補が複数ある場合は未解決として記録します。外部 URL と未解決リンクの `TARGET_ID` は
 `-` です。コードブロック・インラインコード内のリンクは対象外です。
-Markdown リンクではパーセントエンコードされたパスも解決します。`index watch` の実行中は
-編集・移動が自動で反映されます。実行していない場合や、index をアップグレードした場合は
-`index rescan` が必要です。
+Markdown リンクではパーセントエンコードされたパスも解決します。デーモンの監視により
+編集・移動が自動で反映されます。
 
 ## metadata / link
 
@@ -240,7 +229,7 @@ mindmount link delete <LINK_ID>
 ```
 
 DB 独自メタデータと Knowledge Links を操作します。これらは Markdown から再生成できない
-永続データです。`index rescan` では削除されません。
+永続データです。再同期では削除されません。
 
 ## index search
 
@@ -260,17 +249,19 @@ mindmount index search '設計.*メモ' --regex --file notes
 - 結果は最大 100 件です
 - `--mount` でマウントを絞り込めます
 
-## index rescan
+## mount sync
 
 ```bash
-mindmount index rescan
+mindmount mount sync <MOUNT_ID>
+mindmount mount sync --all
 ```
 
-全マウントの Markdown を走査し、index を再構築します。通常は変更ファイルと影響範囲だけが
-更新されるため、このコマンドは全体を作り直したいときの保険として使えます。出力例:
+全マウント、または指定マウントの Markdown を走査し、index を再構築します。通常は変更
+ファイルと影響範囲だけが更新されるため、このコマンドは全体を作り直したいときの保険として
+使えます。出力例:
 
 ```text
-Reindexed "Project notes" (245510401681731584): 3 files, 1 added, 1 updated, 1 removed, 0 unchanged, 0 errors
+Reindexed "Project notes" (245510401681731584): 3 files, 1 added, 1 updated, 1 missing, 0 unchanged, 0 errors
 ```
 
 - 新規ファイルは追加
@@ -308,11 +299,11 @@ Index metadata and knowledge links were kept inactive.
 mindmount -p ~/Project/app -d ./notes -n "Project notes"
 ```
 
-`mount add` と同じ登録・index 構築を行います。Phase 4 以降は、同じコマンドで
-読み取り専用 Web ビューアも起動する予定です。現在は次の注意書きを表示します。
+`mount add` と同じ登録・index 構築を行います。デーモンが動いていれば、そのまま
+Web ビューアと MCP も利用できます。デーモンが停止している場合は次の注意書きを表示します。
 
 ```text
-note: the read-only web viewer will listen on 127.0.0.1:3000 starting in Phase 4
+note: run `mindmount daemon start --host 127.0.0.1 --port 3000` to open the read-only web viewer
 ```
 
 ## daemon
@@ -325,43 +316,84 @@ mindmount daemon restart
 mindmount daemon run
 ```
 
-デーモンは Web ビューア、MCP Streamable HTTP、ファイル監視を1プロセスで提供します。
-`daemon start` はバックグラウンド、`daemon run` はフォアグラウンドで起動します。
-`serve` は `daemon run` の別名です。
+デーモンは Web ビューア、MCP Streamable HTTP、CLI HTTP API、ファイル監視を1プロセスで
+提供します。`daemon start` は OS のサービス管理機構に登録して起動し、`daemon run` は
+フォアグラウンドで起動します。
 
 - Web: `http://127.0.0.1:3000/`
 - MCP: `http://127.0.0.1:3000/mcp`
+- API: `http://127.0.0.1:3000/api/*`
 - bind は `127.0.0.1` / `::1` のループバックのみ
-- MCP HTTP は `credentials.toml` の `mcp_token` を
+- macOS: launchd user agent、Linux: systemd user service
+- MCP HTTP と CLI API は `credentials.toml` の `mcp_token` を
   `Authorization: Bearer <token>` で要求
 - 二重起動はロックで拒否
-- バックグラウンド起動時のログ: `~/.config/mindmount/daemon.log`
+- ログ: `$XDG_STATE_HOME/mindmount/mindmount.log`（未設定時 `~/.local/state/mindmount/`）
+- `daemon status` はサービス状態、プロセス、API の応答を確認する
+- サービス管理を使えない環境では `daemon run` を使う
 
-## mcp
+### Web ビューア
 
-```bash
-mindmount mcp
+表示できるもの:
+
+- マウント一覧（`/`、`/mounts`）
+- ページ本文と参照・バックリンク（`/page/<DOCUMENT_ID>`）
+- grep 検索（`/search`）
+
+Markdown 内の解決済みリンクと Wiki リンクはページ URL に変換されます。
+HTML はレンダリング後にサニタイズされ、CSS はバイナリに埋め込まれています。
+Host / Origin を検証するため、想定外のホスト名や Origin からのアクセスは拒否されます。
+
+Web UI では Markdown を編集しません。人間は vim などでファイルを直接編集し、
+デーモンの監視が自動で反映します。詳細は [DECISIONS.md](DECISIONS.md) の D-001 を参照してください。
+
+## HTTP API
+
+CLI はデーモンの `/api/*` を経由して操作します。Bearer Token は
+`credentials.toml` の `mcp_token` を自動で読み込みます。
+
+```text
+GET    /api/admin/status
+GET    /api/admin/mounts
+POST   /api/admin/mounts
+POST   /api/admin/mounts/sync
+DELETE /api/admin/mounts/:id
+POST   /api/admin/mounts/:id/sync
+POST   /api/admin/backup
+
+GET    /api/search
+GET    /api/documents
+GET    /api/documents/:id
+GET    /api/documents/:id/links
+GET    /api/documents/:id/backlinks
+GET    /api/documents/:id/metadata
+PUT    /api/documents/:id/metadata/:key
+DELETE /api/documents/:id/metadata/:key
+POST   /api/knowledge-links
+DELETE /api/knowledge-links/:id
 ```
 
-通常はデーモンの `/mcp` を MCP クライアントから利用します。stdio が必要な場合は
-`mindmount mcp` を任意のアダプタとして使えます。
+Markdown を編集・削除する API はありません。デーモンが停止している場合、CLI は
+接続エラーとして失敗し、自動起動や SQLite へのフォールバックは行いません。
+
+## MCP
+
+MCP はデーモンの `/mcp` で Streamable HTTP として提供します。
 
 Tools:
 
 - `mounts` / `list` / `search`
-- `read` / `write`
+- `read`
 - `links` / `backlinks`
 - `metadata_get` / `metadata_set`
 - `link_add` / `link_delete`
 
-`read` は `document_id` または `mount_id` + `path` を受け付けます。`write` も同じ指定方法で、
-既存ページの更新には `read` が返した `content_hash` を `expected_hash` として渡します。
-新規作成では `expected_hash` を省略します。
+`read` は `document_id` または `mount_id` + `path` を受け付けます。
+Mindmount は Markdown を編集しないため、書き込み Tool は提供しません。
 
 Resources として `mindmount://<mount-id>/documents/<document-id>` も公開します。
 
-デーモンの `/mcp` は `credentials.toml` の `mcp_token` を
-`Authorization: Bearer <token>` で要求します。stdio では認証は不要です。
+`credentials.toml` の `mcp_token` を `Authorization: Bearer <token>` で要求します。
 
 ```bash
 cat ~/.config/mindmount/credentials.toml
@@ -382,48 +414,19 @@ MCP クライアントの設定例（形式はクライアントにより異な�
 }
 ```
 
-書き込み時は index が同期されます。stdio ではログを stdout に出さず stderr に限定します。
-
-## serve
-
-```bash
-mindmount serve
-mindmount serve --port 8080
-```
-
-**読み取り専用の Web ビューア**と MCP HTTP をフォアグラウンドで起動します。
-既定では `127.0.0.1:3000` で待ち受けます。bind 先は `127.0.0.1` または `::1` の
-ループバックに限定されます。バックグラウンド実行は `daemon start` を使います。
-
-表示できるもの:
-
-- マウント一覧（`/`、`/mounts`）
-- ページ本文と参照・バックリンク（`/page/<DOCUMENT_ID>`）
-- grep 検索（`/search`）
-
-Markdown 内の解決済みリンクと Wiki リンクはページ URL に変換されます。
-HTML はレンダリング後にサニタイズされ、CSS はバイナリに埋め込まれています。
-Host / Origin を検証するため、想定外のホスト名や Origin からのアクセスは拒否されます。
-
-ローカル版の Web UI では Markdown を編集しません。人間は vim などでファイルを
-直接編集し、`index rescan` で反映します。Web UI での編集は提供しません。
-詳細は [DECISIONS.md](DECISIONS.md) の D-001 を参照してください。
-
 ## ファイル編集と index 反映
 
-`index watch` が動いていない場合、外部エディタでの変更は手動で再同期します。
+デーモンが動いていれば、外部エディタでの変更は自動で index に反映されます。
 
 ```bash
 # vim で編集
 vim ~/Project/app/notes/index.md
 
-# index に反映
-mindmount index rescan
-
 # 確認
 mindmount index pages
 ```
 
+反映されない場合は `mindmount mount sync --all` で再同期してください。
 同じディレクトリに `mount add` を再実行しても再同期されます。
 
 ## 対応する Markdown
@@ -464,7 +467,7 @@ title: Architecture
 
 - frontmatter に `id` があればそれを使う
 - なければ内部で Snowflake ID を発行する
-- 内部 ID は `index rescan` で内容が変わっても維持される
+- 内部 ID は再同期で内容が変わっても維持される
 - frontmatter に `id` があれば、同一マウント内でファイルを移動しても ID を維持する。`id` がない場合、移動後は新しい ID になる
 - DB を削除して再構築した場合、frontmatter に `id` がないドキュメントの内部 ID は変わり得る
 - 同一マウント内で同じ ID が複数ドキュメントに使われている場合はエラーになり、そのマウントの index 更新は適用されない
@@ -476,17 +479,24 @@ mtime は保存しますが、変更判定には使いません。
 
 ## ローカルデータ
 
+XDG 方式で config / data / state / cache を分離します。
+
 ```text
 $XDG_CONFIG_HOME/mindmount/   # 未設定時: ~/.config/mindmount/
 ├── config.toml               # マウント設定の正本
-├── id-state                  # Snowflake ID の発行状態
-├── mindmount.lock            # CLI 操作のプロセス間排他制御
+└── credentials.toml          # CLI / MCP HTTP の Bearer Token
+
+$XDG_DATA_HOME/mindmount/     # 未設定時: ~/.local/share/mindmount/
+├── mindmount.sqlite          # 派生 index と DB 独自データ
+└── id-state                  # Snowflake ID の発行状態
+
+$XDG_STATE_HOME/mindmount/    # 未設定時: ~/.local/state/mindmount/
 ├── mindmount.daemon.lock     # デーモンの二重起動防止
 ├── daemon.pid                # デーモンの PID
-├── daemon.log                # バックグラウンド起動時のログ
-├── credentials.toml          # MCP HTTP の Bearer Token
-└── db/
-    └── mindmount.sqlite      # 派生 index と DB 独自データ
+├── daemon.endpoint           # CLI が接続する URL
+└── mindmount.log             # サービス起動時のログ
+
+$XDG_CACHE_HOME/mindmount/    # 未設定時: ~/.cache/mindmount/
 ```
 
 `config.toml` の例:
@@ -505,19 +515,20 @@ created_at = "2026-11-09T11:20:04.405660Z"
 - `config.toml` がマウント設定の正本
 - SQLite は派生 index と、メタデータ・Knowledge Links などの永続データを含む。DB を削除すると後者は失われる
 - 検索は実ファイルを直接読むため、SQLite に Markdown の本文は保存されない
-- macOS / Linux では、起動時に Mindmount のデータディレクトリと DB ファイルからグループ・その他ユーザーのアクセス権を取り除く
+- macOS / Linux では、起動時に各ディレクトリと DB ファイルからグループ・その他ユーザーのアクセス権を取り除く
+- 旧レイアウトの `config/db/mindmount.sqlite` と `config/id-state` は初回起動時に data へ移動する
 - `node_id` は 0〜1023。通常は変更しない
 - `id-state` は ID の重複を防ぐため保持する。ID の範囲を先に予約するため、再起動後の ID の時刻部分が実時刻より進む場合がある
-- ロック中の別プロセスがある場合、コマンドはエラーで終了する
-- 手で設定を編集した場合も、次のコマンド実行時に SQLite のマウント一覧へ同期される
+- デーモンが起動中は `config.toml` のマウント一覧が SQLite に同期される
 
 ### DB をリセットする
 
 ```bash
-rm -f ~/.config/mindmount/db/mindmount.sqlite \
-      ~/.config/mindmount/db/mindmount.sqlite-wal \
-      ~/.config/mindmount/db/mindmount.sqlite-shm
-mindmount index rescan
+rm -f ~/.local/share/mindmount/mindmount.sqlite \
+      ~/.local/share/mindmount/mindmount.sqlite-wal \
+      ~/.local/share/mindmount/mindmount.sqlite-shm
+mindmount daemon restart
+mindmount mount sync --all
 ```
 
 マウント設定は `config.toml` に残るため、index だけが再構築されます。frontmatter に
@@ -528,16 +539,21 @@ mindmount index rescan
 | 変数 | 説明 |
 |---|---|
 | `XDG_CONFIG_HOME` | 設定ディレクトリの基準。絶対パスであること |
-| `HOME` | `XDG_CONFIG_HOME` 未設定時の `~/.config` 解決に使う |
+| `XDG_DATA_HOME` | DB と ID 状態の基準。未設定時は `~/.local/share` |
+| `XDG_STATE_HOME` | PID・endpoint・ログの基準。未設定時は `~/.local/state` |
+| `XDG_CACHE_HOME` | キャッシュの基準。未設定時は `~/.cache` |
+| `HOME` | XDG 変数が未設定のときの基準 |
 | `RUST_LOG` | ログフィルタ。既定は `mindmount=warn,warn` |
+| `MINDMOUNT_DISABLE_SERVICE` | 設定すると `daemon start/stop` のサービス管理を無効化する（テスト用） |
 
-ログは stderr に出力します。
+ログは stderr に出力します。`daemon start` ではサービス管理機構がログを
+`$XDG_STATE_HOME/mindmount/mindmount.log` に記録します。
 
 `XDG_CONFIG_HOME` が相対パスの場合はエラーになります。
 
 ```bash
 # 例: ログを詳細にする
-RUST_LOG=mindmount=debug mindmount index rescan
+RUST_LOG=mindmount=debug mindmount mount sync --all
 ```
 
 ## 終了コード
@@ -548,7 +564,7 @@ RUST_LOG=mindmount=debug mindmount index rescan
 | `1` | 実行時エラー（パス不正、DB エラー、未登録マウントなど） |
 | `2` | CLI 引数のパースエラー |
 
-`index rescan` は一部マウントで失敗しても残りを処理し、最後に `1` で終了します。
+`mount sync --all` は一部マウントで失敗しても残りを処理し、最後に `1` で終了します。
 
 ## トラブルシューティング
 
@@ -570,12 +586,13 @@ RUST_LOG=mindmount=debug mindmount index rescan
 
 ```bash
 mindmount mount list
-mindmount index rescan
+mindmount mount sync --all
 ```
 
 ### 編集したのに `index pages` が変わらない
 
-`index pages` は index を読むだけです。`mindmount index rescan` を実行してください。
+`index pages` は index を読むだけです。デーモンの監視が反映するまで待つか、
+`mindmount mount sync --all` を実行してください。
 
 ### `document id N is used by both ...`
 
@@ -601,15 +618,12 @@ SQLite の WAL と 5 秒の busy timeout を使っています。別プロセス
 - index 構築は Markdown を変更しない
 - `unmount` は Markdown を削除しない
 - 設定ファイルは一時ファイル経由で atomic に書き換える
-- 内部の書き込み API は一時ファイル + fsync + rename を使う
-- ローカル Web ビューアは Phase 4 で GET のみを提供する予定
-- Markdown の HTML レンダリング時はサニタイズする予定
+- ローカル Web ビューアは GET のみを提供する
+- Markdown の HTML レンダリング時はサニタイズする
 
 ## 現時点の制約
 
-- `index watch` を停止している間の外部編集は手動で再走査する
-- MCP なし（Phase 3）
-- Web ビューアなし（Phase 4）
+- デーモンが停止していると CLI の通常操作は失敗する
 - ローカル Web UI は閲覧専用（編集機能なし）
 - frontmatter は簡易 YAML パーサ
-- `index rescan` は毎回全ファイルを走査する
+- `mount sync --all` は毎回全ファイルを走査する

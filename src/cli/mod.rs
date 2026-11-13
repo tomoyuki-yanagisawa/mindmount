@@ -1,18 +1,23 @@
 //! CLI adapter: command definitions, dispatch, and rendering.
 
+pub mod client;
 pub mod output;
 
-use std::path::PathBuf;
+use std::path::{absolute, PathBuf};
 
 use anyhow::{bail, Result};
 use clap::{Args, CommandFactory, Parser, Subcommand};
-use serde_json::Value;
+use serde_json::{json, Value};
 
-use crate::config::{AppPaths, Config};
-use crate::core::id::Snowflake;
+use crate::config::AppPaths;
+use crate::core::document::Document;
 use crate::daemon;
-use crate::db::Database;
-use crate::usecase::{index as index_ops, knowledge, mount};
+use crate::db::queries::{LinkRow, MetadataEntry};
+use crate::index::indexer::{SyncOutcome, SyncReport};
+use crate::search::SearchHit;
+use crate::usecase::mount::{MountResult, MountRow};
+
+use self::client::Client;
 
 /// Local-first Markdown knowledge server for humans and AI.
 #[derive(Debug, Parser)]
@@ -63,10 +68,6 @@ pub enum Command {
     },
     /// Print the version.
     Version,
-    /// Start the daemon in the foreground (web viewer and MCP HTTP).
-    Serve(ServerOptions),
-    /// Start the optional MCP stdio server.
-    Mcp,
 }
 
 #[derive(Debug, Subcommand)]
@@ -141,10 +142,6 @@ pub enum MountCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum IndexCommand {
-    /// Rebuild the derived index for every registered mount.
-    Rescan,
-    /// Watch mounted directories and update the index until interrupted.
-    Watch,
     /// List indexed pages.
     Pages(PagesOptions),
     /// Search indexed Markdown by literal text.
@@ -230,10 +227,6 @@ pub async fn run(cli: Cli) -> Result<()> {
     }
 
     let paths = AppPaths::from_env()?;
-    paths.ensure_dirs()?;
-    if matches!(cli.command, Some(Command::Mcp)) {
-        return crate::mcp::run(&paths).await;
-    }
     if let Some(Command::Daemon { command }) = &cli.command {
         return match command {
             DaemonCommand::Start(options) => {
@@ -247,88 +240,70 @@ pub async fn run(cli: Cli) -> Result<()> {
             DaemonCommand::Run(options) => daemon::run(&paths, &options.host, options.port).await,
         };
     }
-    if let Some(Command::Serve(options)) = &cli.command {
-        return daemon::run(&paths, &options.host, options.port).await;
+    if matches!(cli.command, Some(Command::Version)) {
+        println!("mindmount {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
     }
-    if matches!(
-        cli.command,
-        Some(Command::Index {
-            command: IndexCommand::Watch
-        })
-    ) {
-        return crate::index::watch::run(&paths).await;
-    }
-    let _lock = paths.lock()?;
-    let mut config = Config::load_or_create(&paths.config_file())?;
-    let database = Database::open(&paths.database_file()).await?;
-    let mut ids = Snowflake::persistent(config.node_id, &paths.id_state_file())?;
 
+    let client = Client::from_env(&paths)?;
     match cli.command {
         None => {
             let (Some(project), Some(directory)) = (&cli.mount.project, &cli.mount.directory)
             else {
                 bail!("both --project and --directory are required to mount a directory");
             };
-            let result = mount::register(
-                &mut config,
-                &paths,
-                &database,
-                &mut ids,
-                project,
-                directory,
-                cli.mount.name.clone(),
-            )
-            .await?;
+            let result = add_mount(&client, project, directory, cli.mount.name.clone()).await?;
             output::mount_result(&result);
             println!(
-                "note: run `mindmount serve --host {} --port {}` to open the read-only web viewer",
+                "note: run `mindmount daemon start --host {} --port {}` to open the read-only web viewer",
                 cli.server.host, cli.server.port
             );
         }
         Some(Command::Mount { command }) => match command {
             MountCommand::Add(options) => {
-                let result = mount::register(
-                    &mut config,
-                    &paths,
-                    &database,
-                    &mut ids,
-                    &options.project,
-                    &options.directory,
-                    options.name,
-                )
-                .await?;
+                let result =
+                    add_mount(&client, &options.project, &options.directory, options.name).await?;
                 output::mount_result(&result);
             }
             MountCommand::List { all } => {
-                let rows = mount::list(&config, &database, all).await?;
+                let rows: Vec<MountRow> = client
+                    .get_query("/api/admin/mounts", vec![("all".into(), all.to_string())])
+                    .await?;
                 output::mounts(&rows);
             }
             MountCommand::Remove { mount_id } => {
-                let removed = mount::unmount(&mut config, &paths, &database, mount_id).await?;
+                let removed = client
+                    .delete::<crate::config::Mount>(&format!("/api/admin/mounts/{mount_id}"))
+                    .await?;
                 output::unmounted(&removed);
             }
             MountCommand::Sync { mount_id, all } => match (mount_id, all) {
                 (_, true) => {
-                    let outcome = index_ops::rescan(&config, &database, &mut ids).await?;
+                    let outcome: SyncOutcome =
+                        client.post("/api/admin/mounts/sync", &json!({})).await?;
                     output::reindex(&outcome)?;
                 }
                 (Some(mount_id), false) => {
-                    let report =
-                        index_ops::resync_mount(&config, &database, &mut ids, mount_id).await?;
+                    let report: SyncReport = client
+                        .post(&format!("/api/admin/mounts/{mount_id}/sync"), &json!({}))
+                        .await?;
                     println!("Reindexed mount {mount_id}: {}", report.summary());
                 }
                 (None, false) => bail!("specify a mount id or --all"),
             },
         },
         Some(Command::Index { command }) => match command {
-            IndexCommand::Rescan => {
-                let outcome = index_ops::rescan(&config, &database, &mut ids).await?;
-                output::reindex(&outcome)?;
-            }
-            IndexCommand::Watch => unreachable!("watch is handled before acquiring the lock"),
             IndexCommand::Pages(options) => {
-                let documents = index_ops::pages(&config, &database, options.mount_id).await?;
-                output::page_list(&config, &documents, "No pages indexed.");
+                let documents: Vec<Document> = client
+                    .get_query(
+                        "/api/documents",
+                        options
+                            .mount_id
+                            .map(|id| vec![("mount".into(), id.to_string())])
+                            .unwrap_or_default(),
+                    )
+                    .await?;
+                output::page_list(&documents, "No pages indexed.");
             }
             IndexCommand::Search {
                 query,
@@ -336,23 +311,37 @@ pub async fn run(cli: Cli) -> Result<()> {
                 file,
                 regex,
             } => {
-                let hits =
-                    index_ops::search(&config, &database, &query, mount_id, file.as_deref(), regex)
-                        .await?;
+                let mut params = vec![("q".into(), query)];
+                if let Some(id) = mount_id {
+                    params.push(("mount".into(), id.to_string()));
+                }
+                if let Some(file) = file {
+                    params.push(("file".into(), file));
+                }
+                if regex {
+                    params.push(("regex".into(), "true".into()));
+                }
+                let hits: Vec<SearchHit> = client.get_query("/api/search", params).await?;
                 output::search_hits(&hits);
             }
             IndexCommand::References { document_id } => {
-                let links = index_ops::links(&config, &database, document_id, false).await?;
+                let links: Vec<LinkRow> = client
+                    .get(&format!("/api/documents/{document_id}/links"))
+                    .await?;
                 output::links(&links);
             }
             IndexCommand::Backlinks { document_id } => {
-                let links = index_ops::links(&config, &database, document_id, true).await?;
+                let links: Vec<LinkRow> = client
+                    .get(&format!("/api/documents/{document_id}/backlinks"))
+                    .await?;
                 output::links(&links);
             }
         },
         Some(Command::Metadata { command }) => match command {
             MetadataCommand::Get { document_id } => {
-                let entries = knowledge::metadata(&database, document_id).await?;
+                let entries: Vec<MetadataEntry> = client
+                    .get(&format!("/api/documents/{document_id}/metadata"))
+                    .await?;
                 output::metadata(&entries);
             }
             MetadataCommand::Set {
@@ -361,7 +350,12 @@ pub async fn run(cli: Cli) -> Result<()> {
                 value,
             } => {
                 let value: Value = serde_json::from_str(&value).unwrap_or(Value::String(value));
-                knowledge::set_metadata(&database, document_id, &key, &value, "cli").await?;
+                client
+                    .put::<_, Value>(
+                        &format!("/api/documents/{document_id}/metadata/{key}"),
+                        &json!({ "value": value }),
+                    )
+                    .await?;
                 println!("Updated metadata \"{key}\" for page {document_id}");
             }
         },
@@ -375,22 +369,27 @@ pub async fn run(cli: Cli) -> Result<()> {
                 provenance,
                 status,
             } => {
-                let id = knowledge::add_link(
-                    &database,
-                    source_document_id,
-                    target,
-                    uri.as_deref(),
-                    &relation,
-                    description.as_deref(),
-                    provenance.as_deref(),
-                    "cli",
-                    &status,
-                )
-                .await?;
-                println!("Added knowledge link {id}");
+                let response: Value = client
+                    .post(
+                        "/api/knowledge-links",
+                        &json!({
+                            "source_document_id": source_document_id,
+                            "target_document_id": target,
+                            "target_uri": uri,
+                            "relation_type": relation,
+                            "description": description,
+                            "provenance": provenance,
+                            "status": status,
+                        }),
+                    )
+                    .await?;
+                println!("Added knowledge link {}", response["id"]);
             }
             LinkCommand::Delete { link_id } => {
-                let deleted = knowledge::delete_link(&database, link_id).await?;
+                let response: Value = client
+                    .delete(&format!("/api/knowledge-links/{link_id}"))
+                    .await?;
+                let deleted = response["deleted"].as_bool().unwrap_or(false);
                 println!(
                     "{} knowledge link {link_id}",
                     if deleted { "Deleted" } else { "No such" }
@@ -398,14 +397,35 @@ pub async fn run(cli: Cli) -> Result<()> {
             }
         },
         Some(Command::Backup { path }) => {
-            database.backup(&path).await?;
+            let path = absolute(&path)?;
+            client
+                .post::<_, Value>("/api/admin/backup", &json!({ "path": path }))
+                .await?;
             println!("Backed up to {}", path.display());
         }
-        Some(Command::Version) => println!("mindmount {}", env!("CARGO_PKG_VERSION")),
-        Some(Command::Daemon { .. }) => unreachable!("daemon is handled before acquiring the lock"),
-        Some(Command::Serve(_)) => unreachable!("serve is handled before acquiring the lock"),
-        Some(Command::Mcp) => unreachable!("mcp is handled before acquiring the lock"),
+        Some(Command::Version) => unreachable!("version is handled before creating the client"),
+        Some(Command::Daemon { .. }) => {
+            unreachable!("daemon is handled before creating the client")
+        }
     }
 
     Ok(())
+}
+
+async fn add_mount(
+    client: &Client,
+    project: &std::path::Path,
+    directory: &std::path::Path,
+    name: Option<String>,
+) -> Result<MountResult> {
+    client
+        .post(
+            "/api/admin/mounts",
+            &json!({
+                "project": absolute(project)?,
+                "directory": directory,
+                "name": name,
+            }),
+        )
+        .await
 }

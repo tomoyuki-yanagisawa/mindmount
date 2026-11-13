@@ -28,6 +28,14 @@ pub async fn set_metadata(
         .map_err(Into::into)
 }
 
+pub async fn delete_metadata(database: &Database, document_id: i64, key: &str) -> Result<bool> {
+    require_document(database, document_id).await?;
+    database
+        .delete_metadata(document_id, key)
+        .await
+        .map_err(Into::into)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn add_link(
     database: &Database,
